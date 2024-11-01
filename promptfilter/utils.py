@@ -3,6 +3,7 @@ from django.conf import settings
 import logging
 import re
 
+
 logger = logging.getLogger(__name__)
 
 class ChatCompletion:
@@ -34,3 +35,14 @@ class ChatCompletion:
         pattern = re.compile(fr"<{tag}>(.*?)</{tag}>", re.DOTALL)
         result = pattern.findall(xml_str)
         return result[0].strip() if len(result) > 0 else None
+
+
+def credentials_to_dict(credentials):
+  return {
+        'token': credentials.token,
+        'refresh_token': credentials.refresh_token,
+        'token_uri': credentials.token_uri,
+        'client_id': credentials.client_id,
+        'client_secret': credentials.client_secret,
+        'scopes': credentials.scopes
+    }

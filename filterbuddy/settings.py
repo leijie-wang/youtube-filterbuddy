@@ -33,18 +33,25 @@ SECRET_KEY = 'django-insecure-vsvaxkpg@#da10^j2)!6zp0n#p65*bo*^aje3h3!!z$sop9r&b
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'http://localhost:3000',]
+ALLOWED_HOSTS = [
+    'localhost', '127.0.0.1', '18.223.152.117', 
+    'youtube.filterbuddypro.com', 
+    'api.youtube.filterbuddypro.com',
+    'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
+]
 
 # CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',
+    'https://youtube.filterbuddypro.com',
+    'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:3000'
+    'http://localhost:3000',
+    'https://youtube.filterbuddypro.com',
+    'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
 ]
-
-CORS_ORIGIN_WHITELIST = ['http://localhost:3000']
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -139,6 +146,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field

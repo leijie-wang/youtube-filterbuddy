@@ -1,4 +1,3 @@
-from tkinter import N
 from venv import logger
 from django.db import models
 from .llm_filter import LLMFilter
@@ -10,9 +9,11 @@ class CommentStatus:
 
 class User(models.Model):
     username = models.CharField(max_length=255, unique=True)
+    oauth_credentials = models.JSONField(blank=True, null=True)
 
     def __str__(self):
         return self.username
+
 
 class Channel(models.Model):
     DEFAULT_MODERATION = [

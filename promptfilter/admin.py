@@ -10,3 +10,4 @@ admin.site.register(Comment)
 admin.site.register(Video)
 admin.site.register(PromptFilter)
 admin.site.register(FilterPrediction)
+ 

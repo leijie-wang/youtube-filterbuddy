@@ -1,32 +1,100 @@
 from doctest import Example
+import json
+import logging
 from math import exp
+from numpy import negative
 import random
-from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse, HttpResponseRedirect
 from django.middleware.csrf import get_token
 from django.db.models import Q, F
-from numpy import negative
+from django.shortcuts import redirect
+import google.oauth2.credentials
+import google_auth_oauthlib.flow
+
+from . import utils
 from .models import Channel, PromptFilter, FilterPrediction, Comment
 from .llm_filter import LLMFilter
 from .llm_buddy import LLMBuddy
 from .tasks import update_predictions_task
-from . import utils
-import logging
-import json
-import random
+from .youtube import YoutubeAPI
 
 logger  = logging.getLogger(__name__)
 buddy = LLMBuddy()
 
+@csrf_exempt
 def csrf_token_view(request):
     # Generate and return the CSRF token
     token = get_token(request)
     return JsonResponse({'csrfToken': token})
 
 
+def verify_user(request):
+    if 'credentials' in request.session and 'channel_id' in request.session['credentials']:
+        channel_id = request.session['credentials']['channel_id']
+        channel = Channel.objects.filter(id=channel_id).first()
+        if channel:
+            return True
+    return False
+
+def authorize_user(request):
+    if verify_user(request):
+        channel_id = request.session['credentials']['channel_id']
+        channel = Channel.objects.filter(id=channel_id).first()
+        user = channel.owner
+        return JsonResponse({
+            'user': user.username,
+            'channel': channel.name
+        }, safe=False)
+
+    flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
+        'client_secret.json',
+        scopes=['https://www.googleapis.com/auth/youtube.force-ssl']
+    )
+    flow.redirect_uri = 'https://api.youtube.filterbuddypro.com/oauth2callback/'
+    authorization_url, state = flow.authorization_url(
+        # Recommended, enable offline access so that you can refresh an access token without
+        # re-prompting the user for permission. Recommended for web server apps.
+        access_type='offline',
+        # Optional, enable incremental authorization. Recommended as a best practice.
+        include_granted_scopes='true',
+        # Optional, set prompt to 'consent' will prompt the user for consent
+        prompt='consent'
+    )
+    # redirect users to the given url
+    return JsonResponse({'authorizeUrl': authorization_url})
+
+
+def oauth2_callback(request):
+    state = request.session.get('state')
+    flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
+        'client_secret.json',  # Path to your OAuth client secret JSON file
+        scopes=['https://www.googleapis.com/auth/youtube.force-ssl'],
+        state=state
+    )
+    flow.redirect_uri = 'https://api.youtube.filterbuddypro.com/oauth2callback/'
+
+    # Fetch the authorization response
+    authorization_response = request.build_absolute_uri()
+    logger.info(f"authorization_response: {authorization_response}")
+    flow.fetch_token(authorization_response=authorization_response)
+
+    # Store credentials in the session
+    credentials = flow.credentials
+    request.session['credentials'] = utils.credentials_to_dict(credentials)
+
+    # we still need to store credentials in the backend
+    user, channel = YoutubeAPI(credentials).create_account()
+    request.session['credentials']['channel_id'] = channel.id
+    return HttpResponseRedirect(
+        f'https://youtube.filterbuddypro.com/?user={user.username}&channel={channel.name}'
+    )
+
+
 def request_filters(request):
     # Retrieve the 'owner' GET parameter
-    owner = request.GET.get('owner')
-    print(f"owner: {owner}")
+    request_data = json.loads(request.body)
+    owner = request_data.get('owner')
     
     if not owner:
         return JsonResponse({'error': 'Owner of the channel parameter is required'}, status=400)

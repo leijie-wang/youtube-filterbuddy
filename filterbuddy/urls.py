@@ -21,6 +21,8 @@ from promptfilter import views as promptviews
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('get-csrf-token/', promptviews.csrf_token_view),
+    path('authorize_users/', promptviews.authorize_user),
+    path('oauth2callback/', promptviews.oauth2_callback),
 
     path('request/filters/', promptviews.request_filters),
     path('request/predictions/', promptviews.request_predictions),

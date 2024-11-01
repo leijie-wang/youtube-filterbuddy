@@ -2,3 +2,6 @@
 db.sqlite3
 .DS_Store
 **/__pycache__/*
+venv/
+staticfiles/
+client_secret.json
