@@ -100,6 +100,7 @@ class PromptFilter(models.Model):
     negative_examples = models.TextField(blank=True, help_text='List of negative examples (optional)')
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='filters')
     action = models.CharField(max_length=10, choices=FILTER_ACTIONS, default='nothing')
+    reply_message = models.TextField(blank=True)
     last_run = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
@@ -112,6 +113,8 @@ class PromptFilter(models.Model):
             'description': self.description,
             'action': self.action,
             'channel': self.channel.name,
+            'replyMessage': self.reply_message,
+
         }
     
     def update_predictions(self, mode):

@@ -423,7 +423,8 @@ def save_prompt(request):
                 'message': f"The filter {filter.name} has not been updated as no changes were detected."
             }, safe=False
         )
-    
+
+
 def delete_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
@@ -466,13 +467,13 @@ def revert_prediction(request):
     
     filter = request_data.get('filter')
     comment = request_data.get('comment')
-    reverted = request_data.get('reverted')
+    is_mistake = request_data.get('is_mistake')
     # retrieve explanation for the classification decision if any
     prediction = FilterPrediction.objects.filter(filter=filter['id'], comment=comment['id']).first()
-    if prediction and prediction.prediction is not None:
+    if prediction.prediction is not None:
         # reverting the prediction only makes sense if there is a not None prediction
-        prediction.groundtruth = not prediction.prediction if reverted else prediction.prediction
-        message = f"We have marked this comment as {prediction.groundtruth}."
+        prediction.groundtruth = not prediction.prediction if is_mistake else prediction.prediction
+        message = f"We have marked this comment's groundtruth as {prediction.groundtruth}."
         prediction.save()
     else:
         message = "This comment has not been classified yet."
