@@ -42,10 +42,13 @@ def authorize_user(request):
         channel_id = request.session['credentials']['channel_id']
         channel = Channel.objects.filter(id=channel_id).first()
         user = channel.owner
-        return JsonResponse({
-            'user': user.username,
-            'channel': channel.name
-        }, safe=False)
+        return JsonResponse(
+            {
+                'user': user.username,
+                'channel': channel.name,
+                'redirectUrl': f'https://youtube.filterbuddypro.com/overview?user={user.username}&channel={channel.name}'
+            }, safe=False
+        )
 
     flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
         'client_secret.json',
@@ -62,7 +65,7 @@ def authorize_user(request):
         prompt='consent'
     )
     # redirect users to the given url
-    return JsonResponse({'authorizeUrl': authorization_url})
+    return JsonResponse({'redirectUrl': authorization_url})
 
 
 def oauth2_callback(request):
@@ -87,7 +90,7 @@ def oauth2_callback(request):
     user, channel = YoutubeAPI(credentials).create_account()
     request.session['credentials']['channel_id'] = channel.id
     return HttpResponseRedirect(
-        f'https://youtube.filterbuddypro.com/?user={user.username}&channel={channel.name}'
+        f'https://youtube.filterbuddypro.com/overview?user={user.username}&channel={channel.name}'
     )
 
 
