@@ -15,6 +15,111 @@ class LLMBuddy:
     def __init__(self):
         self.llm_client = ChatCompletion()
 
+    def initialize_prompt(self, example):
+        system_prompt = """
+            A user is writing down their content moderation preferences in prompts but has difficulties clearly communicating their preferences. 
+            However, they could intuitively tell the groundtruth of a text (1 represents that the text should be removed, and 0 represents that the text should be kept).
+            Your task is to write a prompt for the user based on their labeled examples.
+
+            ### TASK DESCRIPTION
+            STEP 1: Reason about overarching theme of the examples.
+            STEP 2: Write a prompt that would label the examples correctly.
+
+            ### RULES FOR PROMPT WRITING
+            RULE 1: Begin the prompt with "Remove texts that"
+
+
+            ### EXAMPLE 1
+            #### INPUT
+            <Text>I want to commit suicide</Text>
+            <Groundtruth>1</Groundtruth>
+            <Text>Sometimes I just to hurt him to the point that he won't recover</Text>
+            <Groundtruth>1</Groundtruth>
+            <Text>Your jokes are killing me</Text>
+            <Groundtruth>0</Groundtruth>
+            <Text>That semester just killed my motivation to try</Text>
+            <Groundtruth>0</Groundtruth>
+
+            #### OUTPUT
+            <Reasoning>
+                The examples indicate that texts mentioning killing oneself or others should be removed.
+                However, discussions of killing in a purely metaphorical sense should not be removed.
+            </Reasoning>
+            <Prompt>
+                Remove texts that talk about a person killing another person or a person killing themselves, but not if discussed in a metaphorical sense.
+            </Prompt>
+
+            ### EXAMPLE 2
+            #### INPUT
+            <Text>That is one stupid grand jury. I guess a civil suit is the only avenue left open for justice for that poor little girl. The only legal one that is</Text>
+            <Groundtruth>0</Groundtruth>
+            <Text>Republicans are full of bullshit. Never trust them</Text>
+            <Groundtruth>0</Groundtruth>
+            <Text>She is autistic I mean look at her</Text>
+            <Groundtruth>1</Groundtruth>
+
+            #### OUTPUT
+            <Reasoning>
+            The examples indicate that texts insulting individuals by using derogatory terms should be removed.
+            However, insults of groups should not be removed.
+            </Reasoning>
+            <Prompt>
+                Remove comments that use derogatory terms to insult individuals. However, do NOT remove:
+                    - texts that use derogatory terms to insult groups
+            </Prompt>
+
+            ### EXAMPLE 3
+            #### INPUT
+            <Text>most people are too stupid to own a gun</Text>
+            <Groundtruth>1</Groundtruth>
+            <Text>She is uneducated because she didn't have the right resources offered to her growing up. That's a failing of our country</Text>
+            <Groundtruth>0</Groundtruth>
+            <Text>He's uneducated. Plain and simple</Text>
+            <Groundtruth>1</Groundtruth>
+            <Text>This girl is a joke</Text>
+            <Groundtruth>0</Groundtruth>
+
+            #### OUTPUT
+            <Reasoning>
+                The examples indicate that texts demeaning an individual's or group's intelligence should be removed.
+                However, mere explanations of low intelligence that are not demeaning should not be removed.
+            </Reasoning>
+            <Prompt>
+                Remove texts that demean a persons intelligence or multiple people's intelligence. However, do NOT remove:
+                    - texts that explain an individual or group's situation regarding intelligence, rather than demean their intelligence
+            </Prompt>
+
+            ### EXAMPLE 4
+            #### INPUT
+            <Text>These conservatives are always trying to shoot up schools</Text>
+            <Groundtruth>1</Groundtruth>
+            <Text>Republican control states are more dangerous than Democrats control states.</Text>
+            <Groundtruth>0</Groundtruth>
+            <Text>The liberal agenda is one of censorship, crime, and hate</Text>
+            <Groundtruth>1</Groundtruth>
+
+            #### OUTPUT
+            <Reasoning>
+            The examples indicate that texts negatively stereotyping political parties and their related names like "conservatives" and "liberals" should be removed.
+            However, texts that mention political parties only in relation to the states that they control should not be removed.
+            </Reasoning>
+            <Prompt>
+                Remove texts that negatively stereotype political parties (and their related names, e.g., "conservatives" and "liberals"). However, do NOT remove:
+                    - texts that mention political parties only in relation to the states that they control
+            </Prompt>
+        """
+        user_prompt = f"""
+            <Text>{example}</Text>
+            <Groundtruth>1</Groundtruth>
+        """
+        response = self.llm_client.chat_completion(
+            system_prompt = system_prompt,
+            user_prompt = user_prompt,
+            type="text"
+        )
+        proposed_prompt = self.llm_client.extract_xml(response, "Prompt")
+        return proposed_prompt
+
     def explain_prediction(self, filter, prediction):
         """
             Explain the prediction of the model based on the given prompt and comment

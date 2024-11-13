@@ -10,6 +10,7 @@ class User(models.Model):
     username = models.CharField(max_length=255, unique=True, primary_key=True)
     avatar = models.URLField(blank=True, null=True)
     oauth_credentials = models.JSONField(blank=True, null=True)
+    last_fetch = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
         return self.username

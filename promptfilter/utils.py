@@ -48,7 +48,13 @@ def populate_test_users():
     channel.save()
     print(f"Channel {channel.name} has been successfully created!")
     print(f"There are {Channel.objects.all().count()} channels in the database.")
+    populate_filters(channel)
+    return user
 
+def populate_filters(channel):
+    if PromptFilter.objects.filter(channel=channel).exists():
+        print("Prompt filters already exist for the channel.")
+        return
 
     prompt_filters = [
         {"name": "Sexually Explicit Content", "description": "Comments that contain sexually explicit or inappropriate content not suitable for public viewing."},
@@ -60,7 +66,6 @@ def populate_test_users():
         filter.save()
     print(f"{len(prompt_filters)} prompt filters have been successfully created!")
     print(f"There are {PromptFilter.objects.all().count()} prompt filters in the database.")
-    return user
 
 def predict_comments(filter, comments):
     """Predict the comments using the filter.

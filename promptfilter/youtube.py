@@ -1,6 +1,7 @@
 from math import log
 import re
 from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 import logging
 from .models import User, Channel, Video, Comment
 from . import utils
@@ -13,7 +14,7 @@ class YoutubeAPI:
             self.credentials = credentials
         else:
             self.credentials = utils.credentials_to_dict(credentials)
-        # self.youtube = build('youtube', 'v3', credentials=credentials)
+        self.private_youtube = build('youtube', 'v3', credentials=Credentials(**self.credentials))
         self.youtube = build('youtube', 'v3', developerKey='AIzaSyBBdr6RyGr0fRnjAoHzn-NXRmwy_tiYL5A')
 
     def retrieve_channels(self):
@@ -21,18 +22,21 @@ class YoutubeAPI:
         return channel
 
     def retrieve_account(self):
-        account_info = self.youtube.channels().list(mine=True, part='snippet').execute()
-        username = account_info['items'][0]['snippet']['title']
-        channel = account_info['items'][0]['snippet']['customUrl']
-        channelID = account_info['items'][0]['id']
+        account_info = self.private_youtube.channels().list(mine=True, part='snippet').execute()
+        logger.info(f'Account info: {account_info}')
+        snippet = account_info['items'][0]['snippet']
+        channel = snippet['title'] # Leijie Wang
+        username = snippet['customUrl'] #@Leijiewang
+        avatar = snippet['thumbnails']['default']['url']
+        channelID = account_info['items'][0]['id'] #UC1yBKRuGpC1tSM73A0ZjYjQ
         return {
             'username': username,
+            'avatar': avatar,
             'channel': {
                 'name': channel,
-                'channel_id': channelID
+                'id': channelID
             }
         }
-
 
     def retrieve_video_statistics(self, video_id):
         video_details_request = self.youtube.videos().list(
@@ -42,7 +46,8 @@ class YoutubeAPI:
         video_details_response = video_details_request.execute()
         video_details_item = video_details_response['items'][0]
         return video_details_item['statistics']['commentCount']
-    def retrieve_videos(self, channel_id, video_num=5):
+    
+    def retrieve_videos(self, channel_id, video_num=10, published_after=None):
         request = self.youtube.search().list(
             part='snippet',
             channelId=channel_id,
@@ -181,12 +186,24 @@ class YoutubeAPI:
 
         account_info = self.retrieve_account()
 
-        user = User(username=account_info['username'], oauth_credentials=self.credentials)
-        user.save()
+        user, created = User.objects.update_or_create(
+            username=account_info['username'],
+            defaults={
+                'oauth_credentials': self.credentials,
+                'avatar': account_info['avatar']  # Make sure 'avatar' is in account_info if needed
+            }
+        )
 
-        channel = Channel(owner=user, **account_info['channel'])
-        channel.save()
+        channel, created = Channel.objects.update_or_create(
+            owner=user,
+            id=account_info['channel']['id'],  # Use channel ID as the unique key
+            defaults={
+                'name': account_info['channel']['name'],
+            }
+        )
 
+        utils.populate_filters(channel)
         self.initialize_comments(channel)
         return user, channel
     
+    def synchronize(self):
