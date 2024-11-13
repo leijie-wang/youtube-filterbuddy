@@ -434,6 +434,7 @@ def save_prompt(request):
 
     logger.info(f"filter that is saved: {filter}")
     if filter.last_run is None or filter.description != new_filter['description']:
+        logger.info(f"Updating the description of the filter {filter.name}")
         filter.description = new_filter['description']
         if 'action' in new_filter:
             filter.action = new_filter.get('action')
@@ -449,6 +450,7 @@ def save_prompt(request):
             }, safe=False
         )
     elif 'action' in new_filter and filter.action != new_filter['action']:
+        logger.info(f"Updating the action of the filter {filter.name}")
         filter.action = new_filter['action']
         filter.save()
         # We do not revert the old actions but simply impose the new action
@@ -459,14 +461,15 @@ def save_prompt(request):
             {
                 'message': f"The action of the filter {filter.name} has been successfully updated.",
                 'filter': filter.serialize(),
-                'predictions': comments
+                'predictions': comments,
                 'taskId': None
             }, safe=False
         )
     else:
         return JsonResponse(
             {
-                'message': f"The filter {filter.name} has not been updated as no changes were detected."
+                'message': f"The filter {filter.name} has not been updated as no changes were detected.",
+                'taskId': None
             }, safe=False
         )
 

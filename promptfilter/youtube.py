@@ -4,6 +4,7 @@ from math import log
 import re
 from django.utils import timezone
 from django.db.models import Q
+from django.conf import settings
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
@@ -53,7 +54,7 @@ class YoutubeAPI:
         video_details_item = video_details_response['items'][0]
         return video_details_item['statistics']['commentCount']
     
-    def retrieve_videos(self, channel_id, video_num=10, published_after=None):
+    def retrieve_videos(self, channel_id, video_num=5, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T').replace('+00:00', 'Z')
         
@@ -154,7 +155,7 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=30, published_after=None):
+    def retrieve_comments(self, video_id, comment_num=20, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T') + 'Z'
         
@@ -243,12 +244,16 @@ class YoutubeAPI:
 
     def delete_comment(self, comment_id):
         # https://developers.google.com/youtube/v3/docs/comments/delete#try-it
-        request = self.private_youtube.comments().delete(
-            id=comment_id
-        )
-        response = request.execute()
-        logger.info(f'Deleting comment {comment_id}: {response}')
-        return response
+        if settings.DJANGO_ENV == 'production':
+            request = self.private_youtube.comments().delete(
+                id=comment_id
+            )
+            response = request.execute()
+            logger.info(f'Deleting comment {comment_id}: {response}')
+            return response
+        elif settings.DJANGO_ENV == 'debug':
+            logger.info(f'Deleting comment {comment_id} in development mode')
+            return
 
     def execute_action(self, filter):
         # comments that are predicted as true and do not have a false groundtruth
@@ -261,7 +266,7 @@ class YoutubeAPI:
         if filter.action == 'delete':
             for prediction in predictions:
                 comment = prediction.comment
-                logger.info(f'Deleting comment {comment.id}')
+                logger.info(f'Deleting comment with {settings.DJANGO_ENV} environment')
                 self.delete_comment(comment.id)
                 comment.status = 'deleted'
                 comment.save()
