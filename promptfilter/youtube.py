@@ -33,6 +33,15 @@ class YoutubeAPI:
             }
         }
 
+
+    def retrieve_video_statistics(self, video_id):
+        video_details_request = self.youtube.videos().list(
+            part='statistics',
+            id=f'{video_id}'
+        )
+        video_details_response = video_details_request.execute()
+        video_details_item = video_details_response['items'][0]
+        return video_details_item['statistics']['commentCount']
     def retrieve_videos(self, channel_id, video_num=5):
         request = self.youtube.search().list(
             part='snippet',
@@ -43,8 +52,13 @@ class YoutubeAPI:
         response = request.execute()
         logger.info(f'There are {len(response["items"])} videos in the channel')
         videos = []
-        for item in response['items'][:video_num]:
+        for item in response['items']:
+            if len(videos) >= video_num:
+                break
             video_id = item['id']['videoId']
+            if self.retrieve_video_statistics(video_id) == 0:
+                logger.info(f'Video {video_id} has no comments')
+                continue
             video_title = item['snippet']['title']
             video_description = item['snippet']['description']
             video_image = item['snippet']['thumbnails']['default']['url']
