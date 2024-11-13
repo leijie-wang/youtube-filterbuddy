@@ -25,7 +25,12 @@ urlpatterns = [
     path('oauth2callback/', promptviews.oauth2_callback),
 
     path('request/filters/', promptviews.request_filters),
-    path('request/predictions/', promptviews.request_predictions),
+    path('request/comments/', promptviews.request_comments),
+    path('request/predictions/', promptviews.poll_predictions),
+    path('request/comment_info/', promptviews.request_comment_info),
+    path('request/user/', promptviews.request_user),
+
+    path('prompt/refresh/', promptviews.refresh_predictions),
 
     path('prompt/initialize/', promptviews.initialize_prompt),
     path('prompt/explore/', promptviews.explore_prompt),

@@ -12,27 +12,29 @@ def random_time(zerotime=None):
     return random_time
 
 def populate_test_users():
-    user = User(username='Ryan')
+    user = User(
+        username='TheYoungTurks', 
+        avatar='https://images.pexels.com/photos/1108099/pexels-photo-1108099.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2',
+        oauth_credentials={
+            'token': 'FAKE_TOKEN',
+            'refresh_token': "FAKE_REFRESH_TOKEN",
+            'token_uri': 'https://127.0.0.1',
+            'client_id': 'FAKE_CLIENT_ID',
+            'client_secret': 'FAKE_CLIENT_SECRET',
+            'scopes': [],
+            'myChannelId': 'UC1yBKRuGpC1tSM73A0ZjYjQ'
+        }
+    )
+       
     user.save()
     print(f"User {user.username} has been successfully created!")
     print(f"There are {User.objects.all().count()} users in the database.")
 
-    channel = Channel(owner=user, name='Ryan\'s Channel')
+    channel = Channel(owner=user, name='The Young Turks', id='UC1yBKRuGpC1tSM73A0ZjYjQ')
     channel.save()
     print(f"Channel {channel.name} has been successfully created!")
     print(f"There are {Channel.objects.all().count()} channels in the database.")
 
-    video_info = [
-        {"title": "Conspiracy Theorists Can't Answer This One Simple Question", "video_link": "https://www.example.com/watch?v=conspiracy-theorists-question"},
-        {"title": "Climate Change Deniers Walk Out After Seeing the Facts", "video_link": "https://www.example.com/watch?v=climate-change-deniers-facts"},
-        {"title": "The Earth is Flat and Here's Why", "video_link": "https://www.example.com/watch?v=flat-earth-reasons"},
-        {"title": "Anti-Vaxxers Lose It Over Simple Science Questions", "video_link": "https://www.example.com/watch?v=anti-vaxxers-science"},
-    ]
-    for info in video_info:
-        video = Video(channel=channel, title=info['title'], video_link=info['video_link'], published_at=random_time())
-        video.save()
-    print(f"{len(video_info)} videos have been successfully created!")
-    print(f"There are {Video.objects.all().count()} videos in the database.")
 
     prompt_filters = [
         {"name": "Sexually Explicit Content", "description": "Comments that contain sexually explicit or inappropriate content not suitable for public viewing."},
@@ -44,6 +46,20 @@ def populate_test_users():
         filter.save()
     print(f"{len(prompt_filters)} prompt filters have been successfully created!")
     print(f"There are {PromptFilter.objects.all().count()} prompt filters in the database.")
+
+def populate_videos():
+    channel = Channel.objects.filter(owner__username='TheYoungTurks').first()
+    video_info = [
+        {"title": "Conspiracy Theorists Can't Answer This One Simple Question", "video_link": "https://www.example.com/watch?v=conspiracy-theorists-question"},
+        {"title": "Climate Change Deniers Walk Out After Seeing the Facts", "video_link": "https://www.example.com/watch?v=climate-change-deniers-facts"},
+        {"title": "The Earth is Flat and Here's Why", "video_link": "https://www.example.com/watch?v=flat-earth-reasons"},
+        {"title": "Anti-Vaxxers Lose It Over Simple Science Questions", "video_link": "https://www.example.com/watch?v=anti-vaxxers-science"},
+    ]
+    for info in video_info:
+        video = Video(channel=channel, title=info['title'], video_link=info['video_link'], published_at=random_time())
+        video.save()
+    print(f"{len(video_info)} videos have been successfully created!")
+    print(f"There are {Video.objects.all().count()} videos in the database.")
 
 def populate_test_comments(file_path, field="comment"):
     # file_path = 'datasets/test.csv'

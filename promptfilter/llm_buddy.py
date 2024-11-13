@@ -6,14 +6,14 @@ import json
 import threading
 import time
 
-from . import utils
+from .chat_completion import ChatCompletion
 
 logger = logging.getLogger(__name__)
 
 class LLMBuddy:
 
     def __init__(self):
-        self.llm_client = utils.ChatCompletion()
+        self.llm_client = ChatCompletion()
 
     def explain_prediction(self, filter, prediction):
         """

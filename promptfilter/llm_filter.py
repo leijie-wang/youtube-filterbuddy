@@ -5,7 +5,7 @@ import random
 import json
 import threading
 import time
-from . import utils
+from .chat_completion import ChatCompletion
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class LLMFilter:
             If the given rubric is completely satisfied, give a True prediction. Otherwise, give a False prediction. 
             RETURN YOUR ANSWER in the json format {{“results”: [(index, prediction), ...]}} where (index, prediction) is a tuple, index is the number of the text in the dataset, and prediction is either 1 or 0.
         """
-        self.llm_client = utils.ChatCompletion()
+        self.llm_client = ChatCompletion()
     
     def _generate_dataset_list(self, dataset):
         """

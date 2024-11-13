@@ -1,6 +1,5 @@
 from venv import logger
 from django.db import models
-from .llm_filter import LLMFilter
 
 class CommentStatus:
     PUBLISHED = 'published'
@@ -8,7 +7,8 @@ class CommentStatus:
 
 
 class User(models.Model):
-    username = models.CharField(max_length=255, unique=True)
+    username = models.CharField(max_length=255, unique=True, primary_key=True)
+    avatar = models.URLField(blank=True, null=True)
     oauth_credentials = models.JSONField(blank=True, null=True)
 
     def __str__(self):
@@ -20,6 +20,7 @@ class Channel(models.Model):
         (CommentStatus.DELETED, 'Disallow Comments'),
         (CommentStatus.PUBLISHED, 'Approve Comments'),
     ]
+    id = models.CharField(max_length=255, unique=True, primary_key=True)
     owner = models.OneToOneField(User, on_delete=models.CASCADE, related_name='channel')
     name = models.CharField(max_length=255)
     default_moderation = models.CharField(max_length=10, choices=DEFAULT_MODERATION, default=CommentStatus.PUBLISHED)
@@ -27,27 +28,44 @@ class Channel(models.Model):
     def __str__(self):
         return self.name
 
+
 class Video(models.Model):
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='videos')
+    id = models.CharField(max_length=255, unique=True, primary_key=True)
     title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
     video_link = models.URLField(unique=True)
-    published_at = models.DateTimeField()
+    thumbnail = models.URLField(blank=True, null=True)
+    posted_at = models.DateTimeField()
 
     def __str__(self):
         return self.title
+    
+    def serialize(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'video_link': self.video_link,
+            'thumbnail': self.thumbnail,
+            'posted_at': self.posted_at,
+        }
+
 
 class Comment(models.Model):
     COMMENT_STATUS = [
         (CommentStatus.DELETED, 'Deleted'),
         (CommentStatus.PUBLISHED, 'Published'),   
     ]    
-    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='comments')
+    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='comments', )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='comments')
     content = models.TextField()
+    id = models.CharField(max_length=255, unique=True, primary_key=True)
     posted_at = models.DateTimeField()
     likes = models.PositiveIntegerField(default=0)
     dislikes = models.PositiveIntegerField(default=0)
     parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
+    total_replies = models.PositiveIntegerField(default=0)
     
     status = models.CharField(max_length=10, choices=COMMENT_STATUS, default=CommentStatus.PUBLISHED)
 
@@ -77,11 +95,13 @@ class Comment(models.Model):
             'id': self.id,
             'content': self.content,
             'user': self.user.username,
+            'avatar': self.user.avatar,
             'video': self.video.title,
             'posted_at': self.posted_at,
             'likes': self.likes,
             'dislikes': self.dislikes,
             'status': self.status,
+            'totalReplies': self.total_replies,
         }
 
 
@@ -117,43 +137,6 @@ class PromptFilter(models.Model):
 
         }
     
-    def update_predictions(self, mode):
-        # randomly sample comments from the database to begin with
-        comments = Comment.objects.filter(video__channel=self.channel).order_by('posted_at')
-        if not comments.exists():
-            return None
-        logger.info(f'Filter {self.name} has {comments.count()} comments.')
-        if mode == 'new' and self.last_run:
-            # select comments that appear after the last run
-            comments = comments.filter(posted_at__gt=self.last_run)
-        elif mode == 'all':
-            # we randomly sample 100 comments for testing purposes
-            comments = list(comments.all())
-
-        datasets = [comment.content for comment in comments]
-        
-        llm_filter = LLMFilter({
-            'name': self.name,
-            'description': self.description,
-            }, debug=False)
-        predictions = llm_filter.predict(datasets)
-
-        # summarize the predictions
-        positive_num = sum(predictions)
-        negative_num = len(predictions) - positive_num
-        print(f'There are {positive_num} positive predictions and {negative_num} negative predictions.')
-
-        comments = [comment.serialize() for comment in comments]
-        for index, comment in enumerate(comments):
-            comment['prediction'] = predictions[index]
-            # update the prediction in the database
-            FilterPrediction.objects.update_or_create(
-                filter=self,
-                comment_id=comment['id'],
-                defaults={'prediction': comment['prediction']}
-            )
-        return comments
-        
     def delete_prompt(self):
         # delete predictions associated with this filter
         FilterPrediction.objects.filter(filter=self).delete()

@@ -42,13 +42,13 @@ ALLOWED_HOSTS = [
 
 # CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
+    'http://localhost:3001',
     'https://youtube.filterbuddypro.com',
     'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:3000',
+    'http://localhost:3001',
     'https://youtube.filterbuddypro.com',
     'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
 ]
@@ -152,3 +152,45 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'detailed',
+        },
+    },
+    'formatters': {
+        'detailed': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d) - %(message)s',
+            # Example output: 2024-11-05 10:00:00 [INFO] myapp.views (views.py:23) - Log message
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'django.server': {
+            'handlers': ['console'],
+            'level': 'WARNING',  # Set django.server to WARNING
+            'propagate': False,
+        },
+        'googleapiclient.discovery_cache': {
+            'handlers': ['console'],
+            'level': 'WARNING',  # Set googleapiclient.discovery_cache to WARNING
+            'propagate': False,
+        },
+    },
+}
+
+
+CELERY_BROKER_URL = 'amqp://guest:guest@localhost'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'  # Redis backend URL
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True

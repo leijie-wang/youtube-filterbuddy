@@ -1,26 +1,28 @@
-from doctest import Example
+
 import json
 import logging
-from math import exp
-from numpy import negative
+from math import log
 import random
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponseRedirect
 from django.middleware.csrf import get_token
-from django.db.models import Q, F
-from django.shortcuts import redirect
+from django.db.models import Q, F, Case, When, Value, IntegerField
+from functools import wraps
 import google.oauth2.credentials
 import google_auth_oauthlib.flow
+import os
 
 from . import utils
-from .models import Channel, PromptFilter, FilterPrediction, Comment
+from .models import Channel, PromptFilter, FilterPrediction, Comment, User
 from .llm_filter import LLMFilter
 from .llm_buddy import LLMBuddy
-from .tasks import update_predictions_task
+from .tasks import update_predictions_task, predict_comments_task
 from .youtube import YoutubeAPI
 
 logger  = logging.getLogger(__name__)
 buddy = LLMBuddy()
+FRONTEND_URL = os.getenv("FRONTEND_URL", "localhost:3001")
+
 
 @csrf_exempt
 def csrf_token_view(request):
@@ -28,27 +30,62 @@ def csrf_token_view(request):
     token = get_token(request)
     return JsonResponse({'csrfToken': token})
 
-
 def verify_user(request):
-    if 'credentials' in request.session and 'channel_id' in request.session['credentials']:
-        channel_id = request.session['credentials']['channel_id']
+    if 'credentials' in request.session and 'myChannelId' in request.session['credentials']:
+        channel_id = request.session['credentials']['myChannelId']
         channel = Channel.objects.filter(id=channel_id).first()
         if channel:
             return True
     return False
 
+def user_verification_required(view_func):
+    """Decorator that checks user verification before calling the view function."""
+    @wraps(view_func)
+    def _wrapped_view(request, *args, **kwargs):
+        if not verify_user(request):
+            return JsonResponse({
+                'error': 'User verification failed',
+                'message': 'User credentials or channel information is missing or invalid.'
+            }, status=403)
+        return view_func(request, *args, **kwargs)
+    return _wrapped_view
+
 def authorize_user(request):
+    # for the test user
+    request_data = json.loads(request.body)
+    if request_data.get('whether_test', False):
+        logger.info("Creating a test user")
+        user = User.objects.filter(username='TheYoungTurks').first()
+        if not user:
+            # create a test user
+            user = utils.populate_test_users()
+        channel = Channel.objects.filter(owner=user).first()
+        youtube_api = YoutubeAPI(user.oauth_credentials)
+        youtube_api.initialize_comments(channel, restart=False)
+        request.session['credentials'] = user.oauth_credentials
+        return JsonResponse(
+            {
+                'user': user.username,
+                'channel': channel.name,
+                'redirectUrl': f'{FRONTEND_URL}/overview?owner={user.username}&channel={channel.name}'
+            }, safe=False
+        )
+    
     if verify_user(request):
-        channel_id = request.session['credentials']['channel_id']
+        logger.info("User has already been authorized.")
+        channel_id = request.session['credentials']['myChannelId']
         channel = Channel.objects.filter(id=channel_id).first()
         user = channel.owner
         return JsonResponse(
             {
                 'user': user.username,
                 'channel': channel.name,
-                'redirectUrl': f'https://youtube.filterbuddypro.com/overview?user={user.username}&channel={channel.name}'
+                'redirectUrl': f'{FRONTEND_URL}/overview?owner={user.username}&channel={channel.name}'
             }, safe=False
         )
+    
+    
+    
 
     flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
         'client_secret.json',
@@ -66,7 +103,6 @@ def authorize_user(request):
     )
     # redirect users to the given url
     return JsonResponse({'redirectUrl': authorization_url})
-
 
 def oauth2_callback(request):
     state = request.session.get('state')
@@ -88,21 +124,37 @@ def oauth2_callback(request):
 
     # we still need to store credentials in the backend
     user, channel = YoutubeAPI(credentials).create_account()
-    request.session['credentials']['channel_id'] = channel.id
+    request.session['credentials']['myChannelId'] = channel.id
     return HttpResponseRedirect(
-        f'https://youtube.filterbuddypro.com/overview?user={user.username}&channel={channel.name}'
+        f'https://youtube.filterbuddypro.com/overview?owner={user.username}&channel={channel.name}'
     )
 
+@user_verification_required
+def request_user(request):
+    request_data = json.loads(request.body)
+    owner = request_data.get('owner')
+    owner = User.objects.filter(username=owner).first()
+    if not owner:
+        return JsonResponse({'error': 'Owner of the channel parameter is required'}, status=400)
+    else:
+        return JsonResponse(
+            {
+                'user': owner.username,
+                'channel': owner.channel.name,
+                'avatar': owner.avatar
+            }, safe=False
+        )
 
+@user_verification_required
 def request_filters(request):
     # Retrieve the 'owner' GET parameter
     request_data = json.loads(request.body)
     owner = request_data.get('owner')
-    
+    owner = User.objects.filter(username=owner).first()
     if not owner:
         return JsonResponse({'error': 'Owner of the channel parameter is required'}, status=400)
-    
-    channel = Channel.objects.filter(owner__username=owner).first()
+
+    channel = Channel.objects.filter(owner=owner).first()
     if not channel:
         return JsonResponse({'error': 'Channel not found'}, status=404)
     
@@ -110,19 +162,24 @@ def request_filters(request):
     
     filters_data = [ filter.serialize() for filter in filters]
     
+    youtube_api = YoutubeAPI(owner.oauth_credentials)
+    youtube_api.initialize_comments(channel)
     return JsonResponse(
             {'filters': filters_data}, 
             safe=False
         )
 
-
-def request_predictions(request):
-    filter_id = request.GET.get('filter')
+@user_verification_required
+def request_comments(request):
+    request_data = json.loads(request.body)
+    filter_id = request_data.get('filter')
     
-    if filter_id is None or not filter_id.isnumeric():
+    try:
+        filter_id = int(filter_id)
+    except:
         return JsonResponse({'error': 'The id of the filter is required.'}, status=400)
     
-    predictions = FilterPrediction.objects.filter(filter=filter_id)
+    predictions = FilterPrediction.objects.filter(filter=filter_id).order_by('comment__posted_at')
     logger.info(f"predictions: {len(predictions)}")
     comments = [prediction.serialize() for prediction in predictions]
     
@@ -131,7 +188,63 @@ def request_predictions(request):
             safe=False
         )
 
+@user_verification_required
+def request_comment_info(request):
+    request_data = json.loads(request.body)
+    comment_id = request_data.get('comment')
+    
+    filter_id = request_data.get('filter')
+    prediction = FilterPrediction.objects.filter(filter=filter_id, comment=comment_id).first()
+    if not prediction:
+        return JsonResponse({'error': 'The id of the comment is required.'}, status=400)
+    
+    if prediction.comment.parent is not None:
+        prediction = FilterPrediction.objects.filter(filter=filter_id, comment=prediction.comment.parent.id).first()
+    
+    comment_info = prediction.serialize()
+    comment_info['video'] = prediction.comment.video.serialize()
+    comment_info['replies'] = []
+    for reply in prediction.comment.replies.all():
+        # check whether the reply has an associated prediction
+        reply_prediction = FilterPrediction.objects.filter(filter=filter_id, comment=reply.id).first()
+        if reply_prediction:
+            reply_info = reply_prediction.serialize()
+        else:
+            # this is to make sure the reply has the same structure as the comment so that the frontend can render it
+            reply_info = reply.serialize()
+            reply_info['prediction'] = None
+            reply_info['explanation'] = ''
+            reply_info['groundtruth'] = None
+        comment_info['replies'].append(reply_info)
+        
+    return JsonResponse(
+            {'commentInfo': comment_info}, 
+            safe=False
+        )
 
+@user_verification_required
+def poll_predictions(request):
+    from celery.result import AsyncResult
+    request_data = json.loads(request.body)
+    task_id = request_data.get('task_id')
+    task_result = AsyncResult(task_id)
+    if task_result.ready():
+        results = task_result.get()
+        return JsonResponse({
+            "status": 'completed',
+            "message": f"Task {task_id} is completed",
+            "result": {
+                "predictions": results
+            }
+        })
+    else:
+        return JsonResponse({
+            "status": 'pending',
+            "message": f"Task {task_id} is still pending"
+        })
+
+
+@user_verification_required
 def initialize_prompt(request):
     request_data = json.loads(request.body)
     name = request_data.get('name')
@@ -248,7 +361,7 @@ def initialize_prompt(request):
         }, safe=False
     )
 
-
+@user_verification_required
 def explore_prompt(request):
     request_data = json.loads(request.body)
     owner = request_data.get('owner')
@@ -300,7 +413,7 @@ def explore_prompt(request):
         }, safe=False
     )
 
-
+@user_verification_required
 def improve_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
@@ -334,7 +447,7 @@ def improve_prompt(request):
         }, safe=False
     )
 
-
+@user_verification_required
 def clarify_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
@@ -357,7 +470,7 @@ def clarify_prompt(request):
             }, safe=False
         )
 
-
+@user_verification_required
 def refine_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
@@ -381,8 +494,9 @@ def refine_prompt(request):
             }, safe=False
         )
 
-
+@user_verification_required
 def save_prompt(request):
+
     request_data = json.loads(request.body)
     new_filter = request_data.get('filter')
     mode = request_data.get('mode')
@@ -427,7 +541,7 @@ def save_prompt(request):
             }, safe=False
         )
 
-
+@user_verification_required
 def delete_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
@@ -439,7 +553,7 @@ def delete_prompt(request):
         }, safe=False
     )
 
-
+@user_verification_required
 def explain_prediction(request):
     request_data = json.loads(request.body)
     
@@ -464,7 +578,7 @@ def explain_prediction(request):
         }, safe=False
     )
 
-
+@user_verification_required
 def revert_prediction(request):
     request_data = json.loads(request.body)
     
@@ -482,6 +596,46 @@ def revert_prediction(request):
         message = "This comment has not been classified yet."
     return JsonResponse(
         {
-            'message': message
+            'message': message,
+            'groundtruth': prediction.groundtruth
+        }, safe=False
+    )
+
+@user_verification_required
+def refresh_predictions(request):
+    request_data = json.loads(request.body)
+    filter = request_data.get('filter')
+    
+    affected_comments = FilterPrediction.objects.filter(filter=filter['id']).annotate(
+        # Assign a ranking for groundtruth (more important)
+        groundtruth_rank=Case(
+            When(groundtruth=True, then=Value(1)),   # True (positive) ranked highest
+            When(groundtruth=False, then=Value(1)),  # False (negative) has the same rank as True
+            When(groundtruth=None, then=Value(2)),   # None ranked lowest
+            output_field=IntegerField(),
+        ),
+        # Assign a ranking for prediction (less important)
+        prediction_rank=Case(
+            When(prediction=True, then=Value(1)),    # True (positive) ranked highest
+            When(prediction=False, then=Value(2)),   # False (negative) ranked second
+            When(prediction=None, then=Value(3)),    # None ranked lowest
+            output_field=IntegerField(),
+        )
+    ).order_by('groundtruth_rank', 'prediction_rank', '-comment__posted_at')
+
+    prioritized_number = FilterPrediction.objects.filter(Q(prediction=True) | Q(groundtruth__isnull=False)).count()
+    if prioritized_number > 200:
+        comments = affected_comments[:prioritized_number]
+    else:
+        comments = affected_comments[:200]
+
+    logger.info(f'There are {len(comments)} comments to be updated.')
+    comments = [comment.serialize() for comment in comments]
+    task = predict_comments_task.delay(filter, comments)
+
+    return JsonResponse(
+        {
+            'message': f"The predictions of the filter {filter['name']} has been successfully updated.",
+            'taskId': task.id
         }, safe=False
     )
