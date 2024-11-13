@@ -243,7 +243,6 @@ def poll_predictions(request):
             "message": f"Task {task_id} is still pending"
         })
 
-
 @user_verification_required
 def initialize_prompt(request):
     request_data = json.loads(request.body)
@@ -520,7 +519,7 @@ def save_prompt(request):
         return JsonResponse(
             {
                 'message': f"The description and the predictions of the filter {filter.name} has been successfully updated.",
-                'taskID': task_id,
+                'taskId': task_id,
                 'filter': filter.serialize()
             }, safe=False
         )
