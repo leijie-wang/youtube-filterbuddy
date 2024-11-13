@@ -1,11 +1,13 @@
 import datetime
-from django.utils import timezone
+import logging
 from math import log
 import re
+from django.utils import timezone
+from django.db.models import Q
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-import logging
-from .models import PromptFilter, User, Channel, Video, Comment
+
+from .models import PromptFilter, User, Channel, Video, Comment, FilterPrediction
 from . import tasks
 from . import utils
 
@@ -238,3 +240,28 @@ class YoutubeAPI:
 
         utils.populate_filters(channel)
         return user, channel
+
+    def delete_comment(self, comment_id):
+        # https://developers.google.com/youtube/v3/docs/comments/delete#try-it
+        request = self.private_youtube.comments().delete(
+            id=comment_id
+        )
+        response = request.execute()
+        logger.info(f'Deleting comment {comment_id}: {response}')
+        return response
+
+    def execute_action(self, filter):
+        # comments that are predicted as true and do not have a false groundtruth
+        predictions = FilterPrediction.objects.filter(
+            filter=filter, prediction=True
+        ).filter(
+            Q(groundtruth=True) | Q(groundtruth__isnull=True)
+        ).all()
+        logger.info(f'There are {len(predictions)} comments that we need to execute the action on')
+        if filter.action == 'delete':
+            for prediction in predictions:
+                comment = prediction.comment
+                logger.info(f'Deleting comment {comment.id}')
+                self.delete_comment(comment.id)
+                comment.status = 'deleted'
+                comment.save()

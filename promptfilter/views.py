@@ -210,10 +210,7 @@ def request_comments(request):
         return JsonResponse({'error': 'The id of the filter is required.'}, status=400)
     
     filter = PromptFilter.objects.filter(id=filter_id).first()
-    predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
-    logger.info(f"predictions: {len(predictions)}")
-    comments = [prediction.serialize() for prediction in predictions]
-    comments = utils.determine_new_comments(comments, filter.channel.owner.second_last_sync)
+    comments = utils.retrieve_predictions(filter)
     return JsonResponse(
             {'comments': comments}, 
             safe=False
@@ -435,7 +432,7 @@ def save_prompt(request):
         filter = PromptFilter(name=new_filter['name'], description=new_filter['description'], channel=channel)
         filter.save()
 
-    logger.info(f"filter: {filter}")
+    logger.info(f"filter that is saved: {filter}")
     if filter.last_run is None or filter.description != new_filter['description']:
         filter.description = new_filter['description']
         if 'action' in new_filter:
@@ -443,6 +440,7 @@ def save_prompt(request):
         filter.save()
         task = tasks.update_predictions_task.delay(filter.id, mode)
         task_id = task.id
+        # it is possible that the user updates both the description and the action.
         return JsonResponse(
             {
                 'message': f"The description and the predictions of the filter {filter.name} has been successfully updated.",
@@ -453,11 +451,16 @@ def save_prompt(request):
     elif 'action' in new_filter and filter.action != new_filter['action']:
         filter.action = new_filter['action']
         filter.save()
-        # TODO: update the actions on Youtube based on the new action
+        # We do not revert the old actions but simply impose the new action
+        youtube = YoutubeAPI(filter.channel.owner.oauth_credentials)
+        youtube.execute_action(filter)
+        comments = utils.retrieve_predictions(filter)
         return JsonResponse(
             {
                 'message': f"The action of the filter {filter.name} has been successfully updated.",
-                'filter': filter.serialize()
+                'filter': filter.serialize(),
+                'predictions': comments
+                'taskId': None
             }, safe=False
         )
     else:

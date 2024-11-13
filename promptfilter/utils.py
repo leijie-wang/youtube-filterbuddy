@@ -17,7 +17,6 @@ def credentials_to_dict(credentials):
         'scopes': credentials.scopes
     }
 
-
 def random_time(zerotime=None):
     if zerotime is None:
         zerotime = timezone.now() - timedelta(days=30)
@@ -135,4 +134,11 @@ def determine_new_comments(comments, time_cutoff):
     """
     for comment in comments:
         comment['new'] = time_cutoff is None or comment['posted_at'] > time_cutoff
+    return comments
+
+def retrieve_predictions(filter):
+    predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
+    logger.info(f"predictions: {len(predictions)}")
+    comments = [prediction.serialize() for prediction in predictions]
+    comments = determine_new_comments(comments, filter.channel.owner.second_last_sync)
     return comments
