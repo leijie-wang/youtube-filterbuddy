@@ -53,6 +53,7 @@ def user_verification_required(view_func):
 def authorize_user(request):
     # for the test user
     request_data = json.loads(request.body)
+    # if the user logs in as a test user, we simply fake the credentials
     if request_data.get('whether_test', False):
         logger.info("Creating a test user")
         user = User.objects.filter(username='TheYoungTurks').first()
@@ -71,6 +72,7 @@ def authorize_user(request):
             }, safe=False
         )
     
+    # if the user has already been authorized
     if verify_user(request):
         logger.info("User has already been authorized.")
         channel_id = request.session['credentials']['myChannelId']
@@ -103,6 +105,13 @@ def authorize_user(request):
     )
     # redirect users to the given url
     return JsonResponse({'redirectUrl': authorization_url})
+
+@user_verification_required
+def logout_user(request):
+    if 'credentials' in request.session:
+        del request.session['credentials']
+    page_message = 'Credentials have been cleared.'
+    return JsonResponse({'message': page_message})
 
 def oauth2_callback(request):
     state = request.session.get('state')

@@ -23,6 +23,7 @@ urlpatterns = [
     path('get-csrf-token/', promptviews.csrf_token_view),
     path('authorize_users/', promptviews.authorize_user),
     path('oauth2callback/', promptviews.oauth2_callback),
+    path('logout/', promptviews.logout_user),
 
     path('request/filters/', promptviews.request_filters),
     path('request/comments/', promptviews.request_comments),
