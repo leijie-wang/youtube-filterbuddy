@@ -110,4 +110,11 @@ def update_predictions(filter, mode):
             comment_id=comment['id'],
             defaults={'prediction': comment['prediction']}
         )
-    return comments_with_preds
+    # in addition identify the groundtruth attribute of each comment
+    comments = []
+    for comment in comments_with_preds:
+        comments.append(
+            FilterPrediction.objects.get(filter=filter, comment_id=comment['id']).serialize()
+        )
+
+    return comments
