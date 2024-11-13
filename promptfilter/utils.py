@@ -1,6 +1,6 @@
 import logging
 import random
-from datetime import timedelta
+from datetime import timedelta, datetime
 from django.utils import timezone
 from .models import User, Channel, PromptFilter, Comment, FilterPrediction
 from .llm_filter import LLMFilter
@@ -59,7 +59,7 @@ def populate_filters(channel):
     prompt_filters = [
         {"name": "Sexually Explicit Content", "description": "Comments that contain sexually explicit or inappropriate content not suitable for public viewing."},
         {"name": "Spam", "description": "Comments that are repetitive, irrelevant, or promotional in nature."},
-        {"name": "Off-Topic", "description": "Comments that are unrelated to the video content or discussion."},
+        # {"name": "Off-Topic", "description": "Comments that are unrelated to the video content or discussion."},
     ]
     for info in prompt_filters:
         filter = PromptFilter(channel=channel, name=info['name'], description=info['description'])
@@ -101,8 +101,10 @@ def update_predictions(filter, mode):
     if mode == 'new' and filter.last_run:
         # select comments that appear after the last run
         comments = comments.filter(posted_at__gt=filter.last_run)
-    elif mode == 'all':
+    else:
         comments = list(comments.all())
+    filter.last_run = datetime.now()
+    filter.save()
 
     comments = [comment.serialize() for comment in comments]
     comments_with_preds = predict_comments(filter.serialize(), comments)
@@ -122,4 +124,15 @@ def update_predictions(filter, mode):
             FilterPrediction.objects.get(filter=filter, comment_id=comment['id']).serialize()
         )
 
+    return comments
+
+def determine_new_comments(comments, time_cutoff):
+    """Determine the new comments based on the time cutoff.
+    
+    Args:
+        comments (list): The list of comments to filter.
+        time_cutoff (datetime): The time cutoff.
+    """
+    for comment in comments:
+        comment['new'] = time_cutoff is None or comment['posted_at'] > time_cutoff
     return comments

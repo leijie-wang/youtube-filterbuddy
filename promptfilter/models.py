@@ -10,11 +10,11 @@ class User(models.Model):
     username = models.CharField(max_length=255, unique=True, primary_key=True)
     avatar = models.URLField(blank=True, null=True)
     oauth_credentials = models.JSONField(blank=True, null=True)
-    last_fetch = models.DateTimeField(blank=True, null=True)
+    second_last_sync = models.DateTimeField(blank=True, null=True)
+    last_sync = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
         return self.username
-
 
 class Channel(models.Model):
     DEFAULT_MODERATION = [
@@ -28,7 +28,6 @@ class Channel(models.Model):
     
     def __str__(self):
         return self.name
-
 
 class Video(models.Model):
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='videos')
@@ -51,7 +50,6 @@ class Video(models.Model):
             'thumbnail': self.thumbnail,
             'posted_at': self.posted_at,
         }
-
 
 class Comment(models.Model):
     COMMENT_STATUS = [
@@ -104,7 +102,6 @@ class Comment(models.Model):
             'status': self.status,
             'totalReplies': self.total_replies,
         }
-
 
 class PromptFilter(models.Model):
     FILTER_ACTIONS = [

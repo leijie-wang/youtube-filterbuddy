@@ -2,21 +2,23 @@
 import json
 import logging
 from math import log
+import os
 import random
+import time
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponseRedirect
 from django.middleware.csrf import get_token
 from django.db.models import Q, F, Case, When, Value, IntegerField
 from functools import wraps
-import google.oauth2.credentials
 import google_auth_oauthlib.flow
-import os
+
 
 from . import utils
 from .models import Channel, PromptFilter, FilterPrediction, Comment, User
 from .llm_filter import LLMFilter
 from .llm_buddy import LLMBuddy
-from .tasks import update_predictions_task, predict_comments_task
+from . import tasks
 from .youtube import YoutubeAPI
 
 logger  = logging.getLogger(__name__)
@@ -59,9 +61,8 @@ def authorize_user(request):
         if not user:
             # create a test user
             user = utils.populate_test_users()
+            utils.populate_filters(user.channel)
         channel = Channel.objects.filter(owner=user).first()
-        youtube_api = YoutubeAPI(user.oauth_credentials)
-        youtube_api.initialize_comments(channel, restart=False)
         request.session['credentials'] = user.oauth_credentials
         return JsonResponse(
             {
@@ -76,8 +77,6 @@ def authorize_user(request):
         channel_id = request.session['credentials']['myChannelId']
         channel = Channel.objects.filter(id=channel_id).first()
         user = channel.owner
-        youtube = YoutubeAPI(user.oauth_credentials)
-        youtube.synchronize()
         return JsonResponse(
             {
                 'user': user.username,
@@ -86,9 +85,6 @@ def authorize_user(request):
             }, safe=False
         )
     
-    
-    
-
     flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
         'client_secret.json',
         scopes=['https://www.googleapis.com/auth/youtube.force-ssl']
@@ -139,6 +135,29 @@ def logout_user(request):
     return JsonResponse({'message': page_message})
 
 @user_verification_required
+def synchronize_youtube(request):
+    request_data = json.loads(request.body)
+    owner = request_data.get('owner')
+    user = User.objects.filter(username=owner).first()
+    
+    now_time = timezone.now()
+    if now_time - user.last_sync < timezone.timedelta(minutes=60):
+        return JsonResponse(
+            {
+                'message': 'Synchronization has been initiated recently. Please wait for a few minutes.',
+                'taskId': None,
+            }, safe=False
+        )
+    else:
+        task = tasks.synchronize_youtube_task.delay(user.username)
+        return JsonResponse(
+            {
+                'message': 'Synchronization has been initiated.',
+                'taskId': task.id
+            }, safe=False
+        )
+    
+@user_verification_required
 def request_user(request):
     request_data = json.loads(request.body)
     owner = request_data.get('owner')
@@ -170,9 +189,7 @@ def request_filters(request):
     filters = PromptFilter.objects.filter(channel=channel)
     
     filters_data = [ filter.serialize() for filter in filters]
-    
-    youtube_api = YoutubeAPI(owner.oauth_credentials)
-    youtube_api.initialize_comments(channel)
+
     return JsonResponse(
             {'filters': filters_data}, 
             safe=False
@@ -188,10 +205,11 @@ def request_comments(request):
     except:
         return JsonResponse({'error': 'The id of the filter is required.'}, status=400)
     
-    predictions = FilterPrediction.objects.filter(filter=filter_id).order_by('comment__posted_at')
+    filter = PromptFilter.objects.filter(id=filter_id).first()
+    predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
     logger.info(f"predictions: {len(predictions)}")
     comments = [prediction.serialize() for prediction in predictions]
-    
+    comments = utils.determine_new_comments(comments, filter.channel.owner.second_last_sync)
     return JsonResponse(
             {'comments': comments}, 
             safe=False
@@ -232,7 +250,7 @@ def request_comment_info(request):
         )
 
 @user_verification_required
-def poll_predictions(request):
+def poll_tasks(request):
     from celery.result import AsyncResult
     request_data = json.loads(request.body)
     task_id = request_data.get('task_id')
@@ -242,9 +260,7 @@ def poll_predictions(request):
         return JsonResponse({
             "status": 'completed',
             "message": f"Task {task_id} is completed",
-            "result": {
-                "predictions": results
-            }
+            "result": results
         })
     else:
         return JsonResponse({
@@ -421,7 +437,7 @@ def save_prompt(request):
         if 'action' in new_filter:
             filter.action = new_filter.get('action')
         filter.save()
-        task = update_predictions_task.delay(filter.id, mode)
+        task = tasks.update_predictions_task.delay(filter.id, mode)
         task_id = task.id
         return JsonResponse(
             {
@@ -537,7 +553,8 @@ def refresh_predictions(request):
 
     logger.info(f'There are {len(comments)} comments to be updated.')
     comments = [comment.serialize() for comment in comments]
-    task = predict_comments_task.delay(filter, comments)
+
+    task = tasks.predict_comments_task.delay(filter, comments)
 
     return JsonResponse(
         {

@@ -1,9 +1,12 @@
+import datetime
+from django.utils import timezone
 from math import log
 import re
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 import logging
-from .models import User, Channel, Video, Comment
+from .models import PromptFilter, User, Channel, Video, Comment
+from . import tasks
 from . import utils
 
 logger = logging.getLogger(__name__)
@@ -14,7 +17,8 @@ class YoutubeAPI:
             self.credentials = credentials
         else:
             self.credentials = utils.credentials_to_dict(credentials)
-        self.private_youtube = build('youtube', 'v3', credentials=Credentials(**self.credentials))
+        filtered_credentials = {k: v for k, v in self.credentials.items() if k != 'myChannelId'}
+        self.private_youtube = build('youtube', 'v3', credentials=Credentials(**filtered_credentials))
         self.youtube = build('youtube', 'v3', developerKey='AIzaSyBBdr6RyGr0fRnjAoHzn-NXRmwy_tiYL5A')
 
     def retrieve_channels(self):
@@ -48,11 +52,15 @@ class YoutubeAPI:
         return video_details_item['statistics']['commentCount']
     
     def retrieve_videos(self, channel_id, video_num=10, published_after=None):
+        if published_after:
+            published_after = published_after.isoformat('T').replace('+00:00', 'Z')
+        
         request = self.youtube.search().list(
             part='snippet',
             channelId=channel_id,
             type='video',
-            order='date'
+            order='date',
+            publishedAfter=published_after,
         )
         response = request.execute()
         logger.info(f'There are {len(response["items"])} videos in the channel')
@@ -94,12 +102,12 @@ class YoutubeAPI:
             )
             while reply_request:
                 reply_response = reply_request.execute()
-                for reply_item in reply_response.get('items', [])[:1]:
+                for reply_item in reply_response.get('items', []):
                     reply_comment = self.__process_comment(reply_item, parent_comment.video.id, parent_comment)
                     replies.append(reply_comment)
                 # Handle pagination
                 reply_request = self.youtube.comments().list_next(reply_request, reply_response)
-        if len(replies) > 2:
+        if len(replies) > 10:
             logger.info(f'Extracted {len(replies)} replies from the comment {parent_comment.id}')
 
     def __process_comment(self, comment_item, video_id, parent_comment=None):
@@ -144,16 +152,25 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=100):
+    def retrieve_comments(self, video_id, comment_num=30, published_after=None):
+        if published_after:
+            published_after = published_after.isoformat('T') + 'Z'
+        
+        # https://developers.google.com/youtube/v3/docs/commentThreads/list
         comment_request = self.youtube.commentThreads().list(
             part='snippet',
             videoId=video_id,
+            order='time',
+            # publishedAfter=published_after # This is not supported
         )
         comment_response = comment_request.execute()
-        logger.info(f'There are {len(comment_response["items"])} comments in the video')
+        # logger.info(f'There are {len(comment_response["items"])} comments in the video')
         comments = []
         for comment_item in comment_response['items']:
             comment = self.__process_comment(comment_item['snippet'], video_id)
+            if published_after and comment.posted_at < published_after:
+                # we have reached the first comment after the cutoff time
+                return comments
             comments.append(comment)
         
         while ('nextPageToken' in comment_response) and (len(comments) < comment_num):
@@ -165,22 +182,39 @@ class YoutubeAPI:
             comment_response = comment_request.execute()
             for comment_item in comment_response['items']:
                 comment = self.__process_comment(comment_item['snippet'], video_id)
+                if published_after and comment.posted_at < published_after:
+                    # we have reached the first comment after the cutoff time
+                    return comments
                 comments.append(comment)
-        logger.info(f'Extracted {len(comments)} comments from the video {video_id}')
         return comments
         
-    def initialize_comments(self, channel, restart=False):
+    def synchronize(self, user, restart=False):
+        now_synchronized = datetime.datetime.now()
+        channel = user.channel
         videos = Video.objects.filter(channel=channel).all()
         # delete all existing videos and comments
         if restart:
             videos.delete()
-        elif videos.exists():
-            logger.info(f'Found {len(videos)} videos for the channel {channel.name}')
-            return
 
-        videos = self.retrieve_videos(channel.id)
+        new_videos = self.retrieve_videos(channel.id, published_after=user.last_sync)
+        logger.info(f'Found {len(new_videos)} new videos for the channel {user.username}')
+        videos = Video.objects.filter(channel=channel).all()
+
+        total_new_comments = 0
         for video in videos:
-            self.retrieve_comments(video.id)
+            new_comments = self.retrieve_comments(video.id, published_after=user.last_sync)
+            logger.info(f'Extracted {len(new_comments)} new comments from the video {video.title}')
+            total_new_comments += len(new_comments)
+        logger.info(f'Found {total_new_comments} new comments for the channel {user.username}')
+        
+        filters = PromptFilter.objects.filter(channel=channel).all()
+        for filter in filters:
+            logger.info(f'Updated predictions for the filter {filter.name}')
+            utils.update_predictions(filter, 'new')
+        
+        user.second_last_sync = user.last_sync
+        user.last_sync = now_synchronized
+        user.save()
 
     def create_account(self):
 
@@ -203,7 +237,4 @@ class YoutubeAPI:
         )
 
         utils.populate_filters(channel)
-        self.initialize_comments(channel)
         return user, channel
-    
-    def synchronize(self):

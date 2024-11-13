@@ -24,10 +24,11 @@ urlpatterns = [
     path('authorize_users/', promptviews.authorize_user),
     path('oauth2callback/', promptviews.oauth2_callback),
     path('logout/', promptviews.logout_user),
+    path('synchronize/', promptviews.synchronize_youtube),
 
     path('request/filters/', promptviews.request_filters),
     path('request/comments/', promptviews.request_comments),
-    path('request/predictions/', promptviews.poll_predictions),
+    path('request/tasks/', promptviews.poll_tasks),
     path('request/comment_info/', promptviews.request_comment_info),
     path('request/user/', promptviews.request_user),
 
