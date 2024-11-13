@@ -138,10 +138,14 @@ def logout_user(request):
 def synchronize_youtube(request):
     request_data = json.loads(request.body)
     owner = request_data.get('owner')
+    forced = request_data.get('forced', False)
     user = User.objects.filter(username=owner).first()
     
     now_time = timezone.now()
-    if now_time - user.last_sync < timezone.timedelta(minutes=60):
+    if ((not forced)
+        and (user.last_sync is not None)
+        and (now_time - user.last_sync < timezone.timedelta(minutes=60))
+    ):
         return JsonResponse(
             {
                 'message': 'Synchronization has been initiated recently. Please wait for a few minutes.',
