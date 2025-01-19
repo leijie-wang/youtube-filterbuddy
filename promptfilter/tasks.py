@@ -1,8 +1,9 @@
 from venv import logger
 from celery import shared_task
 from .models import PromptFilter, User
-from .utils import update_predictions, predict_comments
+from .updates import update_predictions
 from .youtube import YoutubeAPI
+from .backend_filter import BackendPromptFilter
 
 @shared_task
 def update_predictions_task(filter_id, mode):
@@ -15,7 +16,8 @@ def update_predictions_task(filter_id, mode):
 @shared_task
 def predict_comments_task(filter, comments):
     logger.info(f"Predicting comments for filter {filter} with {len(comments)} comments.")
-    predictions = predict_comments(filter, comments)
+    backend_filter = BackendPromptFilter(**filter)
+    predictions = backend_filter.predict_comments_consistently(comments)
     logger.info(f"Predictions for filter {filter['description']} on {len(comments)} comments have been completed.")
     return { 'predictions': predictions }
 

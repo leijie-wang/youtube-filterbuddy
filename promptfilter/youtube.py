@@ -1,18 +1,21 @@
 import datetime
 import logging
 from math import log
-import re
 from django.utils import timezone
-from django.db.models import Q
+
 from django.conf import settings
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 
 from .models import PromptFilter, User, Channel, Video, Comment, FilterPrediction
-from . import tasks
+from . import updates
 from . import utils
 
+
 logger = logging.getLogger(__name__)
+
+
 class YoutubeAPI:
 
     def __init__(self, credentials):
@@ -97,7 +100,7 @@ class YoutubeAPI:
     def __retrieve_replies(self, parent_comment):
         replies = []
         if parent_comment.total_replies > 0:
-            print(f'This comment has {parent_comment.total_replies} replies')
+            # print(f'This comment has {parent_comment.total_replies} replies')
             replies = []
             reply_request = self.youtube.comments().list(
                 part='snippet',
@@ -155,7 +158,7 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=20, published_after=None):
+    def retrieve_comments(self, video_id, comment_num=100, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T') + 'Z'
         
@@ -166,7 +169,12 @@ class YoutubeAPI:
             order='time',
             # publishedAfter=published_after # This is not supported
         )
-        comment_response = comment_request.execute()
+        try:
+            comment_response = comment_request.execute()
+        except HttpError as error:
+            print(f'An HTTP error occurred:\n{error}')
+            return []
+
         # logger.info(f'There are {len(comment_response["items"])} comments in the video')
         comments = []
         for comment_item in comment_response['items']:
@@ -213,7 +221,7 @@ class YoutubeAPI:
         filters = PromptFilter.objects.filter(channel=channel).all()
         for filter in filters:
             logger.info(f'Updated predictions for the filter {filter.name}')
-            utils.update_predictions(filter, 'new')
+            updates.update_predictions(filter, 'new')
         
         user.second_last_sync = user.last_sync
         user.last_sync = now_synchronized
@@ -252,21 +260,13 @@ class YoutubeAPI:
             logger.info(f'Deleting comment {comment_id}: {response}')
             return response
         elif settings.DJANGO_ENV == 'debug':
-            logger.info(f'Deleting comment {comment_id} in development mode')
+            logger.info(f'Deleting comment {comment_id} in debug mode')
             return
 
-    def execute_action(self, filter):
-        # comments that are predicted as true and do not have a false groundtruth
-        predictions = FilterPrediction.objects.filter(
-            filter=filter, prediction=True
-        ).filter(
-            Q(groundtruth=True) | Q(groundtruth__isnull=True)
-        ).all()
-        logger.info(f'There are {len(predictions)} comments that we need to execute the action on')
+    def execute_action_on_prediction(self, prediction):
+        filter = prediction.filter
         if filter.action == 'delete':
-            for prediction in predictions:
-                comment = prediction.comment
-                logger.info(f'Deleting comment with {settings.DJANGO_ENV} environment')
-                self.delete_comment(comment.id)
-                comment.status = 'deleted'
-                comment.save()
+            comment = prediction.comment
+            self.delete_comment(comment.id)
+            comment.status = 'deleted'
+            comment.save()

@@ -103,6 +103,28 @@ class Comment(models.Model):
             'totalReplies': self.total_replies,
         }
 
+class Example(models.Model):
+    content = models.TextField()
+    groundtruth = models.BooleanField()
+
+    def serialize(self):
+        return {
+            'content': self.content,
+            'groundtruth': self.groundtruth
+        }
+
+class PromptRubric(models.Model):
+    rubric = models.TextField()
+    is_positive = models.BooleanField(default=True)
+    examples = models.ManyToManyField('Example', blank=True, related_name='rubrics')
+
+    def serialize(self):
+        return {
+            'rubric': self.rubric,
+            'examples': [example.serialize() for example in self.examples.all()]
+        }
+
+
 class PromptFilter(models.Model):
     FILTER_ACTIONS = [
         ('delete', 'Delete Comments'),
@@ -113,9 +135,12 @@ class PromptFilter(models.Model):
 
     name = models.CharField(max_length=255)
     description = models.TextField()
-    prompt = models.TextField(blank=True)
-    positive_examples = models.TextField(blank=True, help_text='List of positive examples (optional)')
-    negative_examples = models.TextField(blank=True, help_text='List of negative examples (optional)')
+    rubrics = models.ManyToManyField(PromptRubric, blank=True, related_name='filters')
+    examples = models.ManyToManyField('Example', blank=True, related_name='filters')
+    few_shot_examples = models.JSONField(default=list, blank=True)
+
+    
+
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='filters')
     action = models.CharField(max_length=10, choices=FILTER_ACTIONS, default='nothing')
     reply_message = models.TextField(blank=True)
@@ -125,10 +150,16 @@ class PromptFilter(models.Model):
         return f'{self.name} ({self.channel.name})'
     
     def serialize(self):
+        positive_rubrics = self.rubrics.filter(is_positive=True)
+        negative_rubrics = self.rubrics.filter(is_positive=False)
         return {
             'id': self.id,
             'name': self.name,
             'description': self.description,
+            'positives': [rubric.serialize() for rubric in positive_rubrics],
+            'negatives': [rubric.serialize() for rubric in negative_rubrics],
+            'examples': [example.serialize() for example in self.examples.all()],
+            'fewShotExamples': self.few_shot_examples,
             'action': self.action,
             'channel': self.channel.name,
             'replyMessage': self.reply_message,

@@ -4,26 +4,29 @@ import logging
 from math import log
 import os
 import random
-import time
-from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
+import re
+from django.db.models import F, Q
 from django.http import JsonResponse, HttpResponseRedirect
 from django.middleware.csrf import get_token
-from django.db.models import Q, F, Case, When, Value, IntegerField
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from functools import wraps
 import google_auth_oauthlib.flow
 
-
-from . import utils
-from .models import Channel, PromptFilter, FilterPrediction, Comment, User
-from .llm_filter import LLMFilter
-from .llm_buddy import LLMBuddy
 from . import tasks
+from . import updates
+from . import utils
 from .youtube import YoutubeAPI
+from .llm_buddy import LLMBuddy
+from .models import Channel, PromptFilter, FilterPrediction, Comment, User
+
+
+
 
 logger  = logging.getLogger(__name__)
 buddy = LLMBuddy()
 FRONTEND_URL = os.getenv("FRONTEND_URL", "localhost:3001")
+IS_LOCAL = os.getenv("IS_LOCAL", "True") == "True"
 
 
 @csrf_exempt
@@ -66,9 +69,10 @@ def authorize_user(request):
         request.session['credentials'] = user.oauth_credentials
         return JsonResponse(
             {
-                'user': user.username,
+                'username': user.username,
                 'channel': channel.name,
-                'redirectUrl': f'{FRONTEND_URL}/overview?owner={user.username}&channel={channel.name}'
+                'isAuthorized': True,
+                'redirectUrl': f'{FRONTEND_URL}/overview'
             }, safe=False
         )
     
@@ -79,12 +83,16 @@ def authorize_user(request):
         user = channel.owner
         return JsonResponse(
             {
-                'user': user.username,
+                'username': user.username,
                 'channel': channel.name,
-                'redirectUrl': f'{FRONTEND_URL}/overview?owner={user.username}&channel={channel.name}'
+                'isAuthorized': True,
+                'redirectUrl': f'{FRONTEND_URL}/overview'
             }, safe=False
         )
     
+    if IS_LOCAL:
+        return JsonResponse({'redirectUrl': '', 'isAuthorized': False})
+
     flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
         'client_secret.json',
         scopes=['https://www.googleapis.com/auth/youtube.force-ssl']
@@ -100,7 +108,7 @@ def authorize_user(request):
         prompt='consent'
     )
     # redirect users to the given url
-    return JsonResponse({'redirectUrl': authorization_url})
+    return JsonResponse({'redirectUrl': authorization_url, 'isAuthorized': False})
 
 def oauth2_callback(request):
     state = request.session.get('state')
@@ -203,6 +211,7 @@ def request_filters(request):
 def request_comments(request):
     request_data = json.loads(request.body)
     filter_id = request_data.get('filter')
+    whether_iterate = request_data.get('iterate', False)
     
     try:
         filter_id = int(filter_id)
@@ -210,7 +219,7 @@ def request_comments(request):
         return JsonResponse({'error': 'The id of the filter is required.'}, status=400)
     
     filter = PromptFilter.objects.filter(id=filter_id).first()
-    comments = utils.retrieve_predictions(filter)
+    comments = utils.retrieve_predictions(filter, whether_iterate)
     return JsonResponse(
             {'comments': comments}, 
             safe=False
@@ -428,20 +437,25 @@ def save_prompt(request):
     if 'id' in new_filter:
         filter = PromptFilter.objects.filter(id=new_filter['id']).first()
     else:
+        # create a new filter
         channel = Channel.objects.filter(owner__username=new_filter['owner']).first()
         filter = PromptFilter(name=new_filter['name'], description=new_filter['description'], channel=channel)
         filter.save()
-
     logger.info(f"filter that is saved: {filter}")
+
     if filter.last_run is None or filter.description != new_filter['description']:
+        # if the filter has not been run before or the description has been updated
         logger.info(f"Updating the description of the filter {filter.name}")
+
         filter.description = new_filter['description']
+        # it is possible that the user updates both the description and the action.
         if 'action' in new_filter:
             filter.action = new_filter.get('action')
         filter.save()
+        
         task = tasks.update_predictions_task.delay(filter.id, mode)
         task_id = task.id
-        # it is possible that the user updates both the description and the action.
+
         return JsonResponse(
             {
                 'message': f"The description and the predictions of the filter {filter.name} has been successfully updated.",
@@ -453,10 +467,11 @@ def save_prompt(request):
         logger.info(f"Updating the action of the filter {filter.name}")
         filter.action = new_filter['action']
         filter.save()
+        
         # We do not revert the old actions but simply impose the new action
-        youtube = YoutubeAPI(filter.channel.owner.oauth_credentials)
-        youtube.execute_action(filter)
-        comments = utils.retrieve_predictions(filter)
+        updates.update_actions(filter, mode)
+        
+        comments = utils.retrieve_predictions(filter, False)
         return JsonResponse(
             {
                 'message': f"The action of the filter {filter.name} has been successfully updated.",
@@ -535,40 +550,17 @@ def revert_prediction(request):
 
 @user_verification_required
 def refresh_predictions(request):
+
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
-    
-    affected_comments = FilterPrediction.objects.filter(filter=filter['id']).annotate(
-        # Assign a ranking for groundtruth (more important)
-        groundtruth_rank=Case(
-            When(groundtruth=True, then=Value(1)),   # True (positive) ranked highest
-            When(groundtruth=False, then=Value(1)),  # False (negative) has the same rank as True
-            When(groundtruth=None, then=Value(2)),   # None ranked lowest
-            output_field=IntegerField(),
-        ),
-        # Assign a ranking for prediction (less important)
-        prediction_rank=Case(
-            When(prediction=True, then=Value(1)),    # True (positive) ranked highest
-            When(prediction=False, then=Value(2)),   # False (negative) ranked second
-            When(prediction=None, then=Value(3)),    # None ranked lowest
-            output_field=IntegerField(),
-        )
-    ).order_by('groundtruth_rank', 'prediction_rank', '-comment__posted_at')
+    comments = request_data.get('comments')
 
-    prioritized_number = FilterPrediction.objects.filter(Q(prediction=True) | Q(groundtruth__isnull=False)).count()
-    if prioritized_number > 200:
-        comments = affected_comments[:prioritized_number]
-    else:
-        comments = affected_comments[:200]
-
-    logger.info(f'There are {len(comments)} comments to be updated.')
-    comments = [comment.serialize() for comment in comments]
-
+    logger.info(f'We want to refresh their predictions of {len(comments)} comments.')
     task = tasks.predict_comments_task.delay(filter, comments)
 
     return JsonResponse(
         {
-            'message': f"The predictions of the filter {filter['name']} has been successfully updated.",
+            'message': f"We start to calculate the predictions of the filter {filter['name']}.",
             'taskId': task.id
         }, safe=False
     )

@@ -200,6 +200,21 @@ LOGGING = {
             'level': 'WARNING',  # Set googleapiclient.discovery_cache to WARNING
             'propagate': False,
         },
+        'httpx': {
+            'handlers': ['console'],
+            'level': 'WARNING', 
+            'propagate': False,
+        }, # disable openai requests logging
+        'openai': {
+            'handlers': ['console'],
+            'level': 'WARNING', 
+            'propagate': False,
+        },
+        'promptfilter.llm_filter': {
+            'handlers': ['console'],
+            'level': 'ERROR',
+            'propagate': False,
+        }
     },
 }
 

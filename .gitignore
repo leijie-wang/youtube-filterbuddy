@@ -5,3 +5,7 @@ db.sqlite3
 venv/
 staticfiles/
 client_secret.json
+notebooks/experiments/*
+
+**/*.ipynb
+datasets/*

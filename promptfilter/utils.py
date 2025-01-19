@@ -1,9 +1,14 @@
 import logging
+import numpy as np
 import random
-from datetime import timedelta, datetime
+from scipy.spatial.distance import cdist
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from datetime import timedelta
 from django.utils import timezone
+from django.db.models import Q, F, Case, When, Value, IntegerField
+
 from .models import User, Channel, PromptFilter, Comment, FilterPrediction
-from .llm_filter import LLMFilter
+
 
 logger = logging.getLogger(__name__)
 
@@ -66,65 +71,6 @@ def populate_filters(channel):
     print(f"{len(prompt_filters)} prompt filters have been successfully created!")
     print(f"There are {PromptFilter.objects.all().count()} prompt filters in the database.")
 
-def predict_comments(filter, comments):
-    """Predict the comments using the filter.
-    
-    Args:
-        filter (dict): The filter information.
-        comments (list): The list of comments to predict.
-    """
-
-    datasets = [comment['content'] for comment in comments]
-    llm_filter = LLMFilter({
-            'name': filter['name'],
-            'description': filter['description'],
-        }, debug=False
-    )
-    predictions = llm_filter.predict(datasets)
-    for index, comment in enumerate(comments):
-        # make sure it is true or false
-        comment['prediction'] = predictions[index] == 1
-
-    # summarize the predictions
-    positive_num = sum(predictions)
-    negative_num = len(predictions) - positive_num
-    print(f'There are {positive_num} positive predictions and {negative_num} negative predictions.')
-    return comments
-
-def update_predictions(filter, mode):
-    # randomly sample comments from the database to begin with
-    comments = Comment.objects.filter(video__channel=filter.channel).order_by('posted_at')
-    if not comments.exists():
-        return None
-    logger.info(f'Filter {filter.name} has {comments.count()} comments.')
-    if mode == 'new' and filter.last_run:
-        # select comments that appear after the last run
-        comments = comments.filter(posted_at__gt=filter.last_run)
-    else:
-        comments = list(comments.all())
-    filter.last_run = datetime.now()
-    filter.save()
-
-    comments = [comment.serialize() for comment in comments]
-    comments_with_preds = predict_comments(filter.serialize(), comments)
-
-    
-    for comment in comments_with_preds:
-        # update the prediction in the database
-        FilterPrediction.objects.update_or_create(
-            filter=filter,
-            comment_id=comment['id'],
-            defaults={'prediction': comment['prediction']}
-        )
-    # in addition identify the groundtruth attribute of each comment
-    comments = []
-    for comment in comments_with_preds:
-        comments.append(
-            FilterPrediction.objects.get(filter=filter, comment_id=comment['id']).serialize()
-        )
-
-    return comments
-
 def determine_new_comments(comments, time_cutoff):
     """Determine the new comments based on the time cutoff.
     
@@ -136,9 +82,190 @@ def determine_new_comments(comments, time_cutoff):
         comment['new'] = time_cutoff is None or comment['posted_at'] > time_cutoff
     return comments
 
-def retrieve_predictions(filter):
-    predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
-    logger.info(f"predictions: {len(predictions)}")
+def retrieve_predictions(filter, whether_iterate):
+    if not whether_iterate:
+        predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
+        logger.info(f"predictions: {len(predictions)}")
+    else:
+        predictions = FilterPrediction.objects.filter(filter=filter).annotate(
+            # Assign a ranking for groundtruth (more important)
+            groundtruth_rank=Case(
+                When(groundtruth=True, then=Value(1)),   # True (positive) ranked highest
+                When(groundtruth=False, then=Value(1)),  # False (negative) has the same rank as True
+                When(groundtruth=None, then=Value(2)),   # None ranked lowest
+                output_field=IntegerField(),
+            ),
+            # Assign a ranking for prediction (less important)
+            prediction_rank=Case(
+                When(prediction=True, then=Value(1)),    # True (positive) ranked highest
+                When(prediction=False, then=Value(2)),   # False (negative) ranked second
+                When(prediction=None, then=Value(3)),    # None ranked lowest
+                output_field=IntegerField(),
+            )
+        ).order_by('groundtruth_rank', 'prediction_rank', '-comment__posted_at')
+
+        prioritized_number = FilterPrediction.objects.filter(Q(prediction=True) | Q(groundtruth__isnull=False), filter=filter).count()
+        logger.info(f"prioritized_number: {prioritized_number}")
+        if prioritized_number > 200:
+            predictions = predictions[:prioritized_number]
+            # unaffected_comments = affected_comments[prioritized_number:]
+        else:
+            predictions = predictions[:200]
+            # unaffected_comments = affected_comments[200:]
+    
     comments = [prediction.serialize() for prediction in predictions]
     comments = determine_new_comments(comments, filter.channel.owner.second_last_sync)
     return comments
+
+def recalculate_confidence(old_pred, new_pred, weight=1):
+    """
+    Recalculate the confidence of the prediction based on the new prediction.
+    Args:
+        old_pred (dict): The old prediction with keys 'prediction' and 'confidence'.
+        new_pred (dict): The new prediction with keys 'prediction' and 'confidence'.
+        weight (float): The weight to give to the new prediction.
+
+    Returns:
+        dict: The new prediction with recalculated confidence in a dictionary.
+    """
+    if old_pred['prediction'] is None:
+        return new_pred['prediction'], new_pred['confidence']
+
+    support_for_old = old_pred['confidence']
+    support_for_other = 1 - old_pred['confidence']
+
+    if new_pred['prediction'] == old_pred['prediction']:
+        support_for_old += weight * new_pred['confidence']
+        support_for_other += weight * (1 - new_pred['confidence'])
+    else:
+        support_for_other += weight * new_pred['confidence']
+        support_for_old += weight * (1 - new_pred['confidence'])
+
+    # Determine which prediction now has more support
+    total_support = support_for_old + support_for_other
+
+    if support_for_old >= support_for_other:
+        updated_prediction = old_pred['prediction']
+        updated_confidence = support_for_old / total_support
+    else:
+        updated_prediction = 1 - old_pred['prediction']
+        updated_confidence = support_for_other / total_support
+
+    return updated_prediction, updated_confidence
+
+def retrieve_rubric_info(filter, rubric_index):
+    # make sure rubric index as a string can be converted to an integer
+    try:
+        rubric_index = int(rubric_index)
+    except ValueError:
+        raise ValueError(f"Error: rubric_index '{rubric_index}' is not convertible to an integer.")
+
+    if 'positives' not in filter or 'negatives' not in filter:
+        raise KeyError("Error: 'rubric_filter' must contain both 'positives' and 'negatives' keys.")
+
+    if rubric_index >= len(filter['positives']):
+        return 'negatives', rubric_index - len(filter['positives'])
+    else:
+        return 'positives', rubric_index
+    
+def clean_comments(comments):
+    new_comments = []
+    for comment in comments or []:
+        new_comments.append(
+            {
+                'content': comment['content'],
+                'groundtruth': comment['groundtruth'],
+                'reflection': comment.get('reflection', None)
+            }
+        )
+    return new_comments
+
+def eval_performance(now_comments, print_comments=False):
+    # measure the performance in terms of accuracy, precision, recall, and F1 score
+    # Extract ground truth and predictions
+    y_true = [comment['groundtruth'] for comment in now_comments]
+    y_pred = [comment['prediction'] for comment in now_comments]
+    
+    # Calculate metrics
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, average='binary')
+    recall = recall_score(y_true, y_pred, average='binary')
+    f1 = f1_score(y_true, y_pred, average='binary')
+    
+    # Print results
+    print(f"Accuracy: {accuracy:.2f}")
+    print(f"Precision: {precision:.2f}")
+    print(f"Recall: {recall:.2f}")
+    print(f"F1 Score: {f1:.2f}")
+    # print out the number of mistakes 
+    mistakes = [comment for comment in now_comments if comment['groundtruth'] != comment['prediction']]
+    false_positives = [comment for comment in mistakes if comment['groundtruth'] == 0 and comment['prediction'] == 1]
+    false_negatives = [comment for comment in mistakes if comment['groundtruth'] == 1 and comment['prediction'] == 0]
+    print(f"\nNumber of mistakes: {len(mistakes)}; False Positives: {len(false_positives)}; False Negatives: {len(false_negatives)}")
+
+    if print_comments:
+        # print first false positives
+        print("\nFalse Positives:")
+        for comment in now_comments:
+            if comment['groundtruth'] == 0 and comment['prediction'] == 1:
+                print(f"\tConfidence: {comment['confidence']}\tComment:\t{comment['content']}\n")
+        # then print false negatives
+        print("\nFalse Negatives:")
+        for comment in now_comments:
+            if comment['groundtruth'] == 1 and comment['prediction'] == 0:
+                print(f"\tConfidence: {comment['confidence']}\tComment:\t{comment['content']}\n")
+                # explanation = llm_buddy.explain_prediction(filter, comment)
+                # print(f"\tExplanation:\t{explanation}\n")
+        # then print true positives
+        print("\nTrue Positives:")
+        for comment in now_comments:
+            if comment['groundtruth'] == 1 and comment['prediction'] == 1:
+                print(f"\tConfidence: {comment['confidence']}\t{comment['content']}\n")
+    
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1
+    }
+
+def sample_diverse_embeddings(embeddings, k):
+    n_samples = embeddings.shape[0]
+    if k > n_samples:
+        raise ValueError("k cannot be larger than the number of available samples.")
+    selected_indices = [np.random.randint(n_samples)]
+    min_distances = cdist(embeddings, embeddings[selected_indices], metric='euclidean').flatten()
+    for _ in range(1, k):
+        # Select the point with the maximum minimum distance to the selected set
+        next_index = np.argmax(min_distances)
+        selected_indices.append(next_index)
+        
+        # Update the minimum distances
+        distances = cdist(embeddings, embeddings[[next_index]], metric='euclidean').flatten()
+        min_distances = np.minimum(min_distances, distances)
+    return selected_indices
+
+def deduplicate_filters(filters):
+    unique_content_sets = {}
+    deduped_filters = []
+
+    for filter_idx, filter_obj in enumerate(filters):
+        # Validate that 'few_shots' exists and is a list
+        if not hasattr(filter_obj, 'few_shots') or not isinstance(filter_obj.few_shots, list):
+            raise ValueError(f"Filter at index {filter_idx} lacks a valid 'few_shots' attribute.")
+
+        # Extract the set of 'content' values
+        try:
+            content_set = frozenset(item['content'] for item in filter_obj.few_shots)
+        except KeyError as e:
+            raise KeyError(f"Missing key in 'few_shots' for filter at index {filter_idx}: {e}")
+
+        # Check if this content_set is already encountered
+        if content_set not in unique_content_sets:
+            unique_content_sets[content_set] = filter_obj
+            deduped_filters.append(filter_obj)
+        else:
+            # Duplicate found; you can choose to log or handle duplicates here
+            print(f"Duplicate found: Filter at index {filter_idx} is a duplicate of another filter.")
+
+    return deduped_filters
