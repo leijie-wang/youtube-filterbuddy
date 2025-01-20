@@ -11,12 +11,11 @@ logger = logging.getLogger(__name__)
 def update_predictions(filter, mode):
     """When we call this function, we want to also execute the corresponding action for each True prediction."""
 
-    comments = Comment.objects.filter(video__channel=filter.channel).order_by('posted_at')
-    if not comments.exists():
-        return None
-    logger.info(f'Filter {filter.name} has {comments.count()} comments.')
-
     comments = filter.retrieve_update_comments(mode)
+    if len(comments) == 0:
+        return None
+    logger.info(f'Filter {filter.name} has {len(comments)} comments at the mode {mode}.')
+    
     filter.last_run = datetime.now()
     filter.save()
 

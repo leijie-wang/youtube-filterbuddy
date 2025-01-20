@@ -57,7 +57,7 @@ class YoutubeAPI:
         video_details_item = video_details_response['items'][0]
         return video_details_item['statistics']['commentCount']
     
-    def retrieve_videos(self, channel_id, video_num=5, published_after=None):
+    def retrieve_videos(self, channel_id, video_num=3, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T').replace('+00:00', 'Z')
         
@@ -114,7 +114,7 @@ class YoutubeAPI:
                 # Handle pagination
                 reply_request = self.youtube.comments().list_next(reply_request, reply_response)
         if len(replies) > 10:
-            logger.info(f'Extracted {len(replies)} replies from the comment {parent_comment.id}')
+            logger.debug(f'Extracted {len(replies)} replies from the comment {parent_comment.id}')
 
     def __process_comment(self, comment_item, video_id, parent_comment=None):
         comment_snippet = comment_item
@@ -158,7 +158,7 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=100, published_after=None):
+    def retrieve_comments(self, video_id, comment_num=20, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T') + 'Z'
         
@@ -193,10 +193,12 @@ class YoutubeAPI:
             comment_response = comment_request.execute()
             for comment_item in comment_response['items']:
                 comment = self.__process_comment(comment_item['snippet'], video_id)
+                children_comments = Comment.objects.filter(parent=comment)
                 if published_after and comment.posted_at < published_after:
                     # we have reached the first comment after the cutoff time
                     return comments
                 comments.append(comment)
+                comments.extend(children_comments)
         return comments
         
     def synchronize(self, user, restart=False):

@@ -86,14 +86,14 @@ class BasicPromptFilter:
                             int(item[1])
                         )
                 else:
-                    logger.warning(f"response {results} is not in any expected format")
+                    logger.debug(f"response {results} is not in any expected format")
             except Exception as e:
                 logger.error(f"Error occurred when prompting LLMs: {e}")
                 continue
 
 
             if len(batch_preds) != len(batch):
-                logger.warning(f"response length {len(results)} does not match batch length {len(batch)}\nresults: {results}")
+                logger.debug(f"response length {len(results)} does not match batch length {len(batch)}\nresults: {results}")
                 continue
             else:
                 predictions += batch_preds

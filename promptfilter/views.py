@@ -28,7 +28,6 @@ buddy = LLMBuddy()
 FRONTEND_URL = os.getenv("FRONTEND_URL", "localhost:3001")
 IS_LOCAL = os.getenv("IS_LOCAL", "True") == "True"
 
-
 @csrf_exempt
 def csrf_token_view(request):
     # Generate and return the CSRF token
@@ -513,7 +512,7 @@ def explain_prediction(request):
     if prediction and prediction.explanation:
         explanation = prediction.explanation
     else:
-        explanation = buddy.explain_prediction(prediction.filter, prediction)
+        explanation = buddy.explain_prediction(prediction.filter.serialize(), prediction.serialize())
         if prediction:
             prediction.explanation = explanation
             prediction.save()

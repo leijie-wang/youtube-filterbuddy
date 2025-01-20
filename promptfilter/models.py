@@ -124,7 +124,6 @@ class PromptRubric(models.Model):
             'examples': [example.serialize() for example in self.examples.all()]
         }
 
-
 class PromptFilter(models.Model):
     FILTER_ACTIONS = [
         ('delete', 'Delete Comments'),
@@ -138,8 +137,6 @@ class PromptFilter(models.Model):
     rubrics = models.ManyToManyField(PromptRubric, blank=True, related_name='filters')
     examples = models.ManyToManyField('Example', blank=True, related_name='filters')
     few_shot_examples = models.JSONField(default=list, blank=True)
-
-    
 
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='filters')
     action = models.CharField(max_length=10, choices=FILTER_ACTIONS, default='nothing')
@@ -170,6 +167,15 @@ class PromptFilter(models.Model):
         # delete predictions associated with this filter
         FilterPrediction.objects.filter(filter=self).delete()
         PromptFilter.objects.filter(id=self.id).delete()
+
+    def retrieve_update_comments(self, mode):
+        comments = Comment.objects.filter(video__channel=self.channel).order_by('posted_at')
+        if mode == 'new' and self.last_run:
+            # select comments that appear after the last run
+            comments = list(comments.filter(posted_at__gt=self.last_run).order_by('posted_at'))
+        else:
+            comments = list(comments.all())
+        return comments
 
 class FilterPrediction(models.Model):
     """A prediction of whether a comment matches a filter. 
