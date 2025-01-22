@@ -35,12 +35,14 @@ urlpatterns = [
     path('prompt/refresh/', promptviews.refresh_predictions),
 
     path('prompt/initialize/', promptviews.initialize_prompt),
+    
     path('prompt/explore/', promptviews.explore_prompt),
     path('prompt/save/', promptviews.save_prompt),
     path('prompt/delete/', promptviews.delete_prompt),
     path('prompt/improve/', promptviews.improve_prompt),
     path('prompt/clarify/', promptviews.clarify_prompt),
     path('prompt/refine/', promptviews.refine_prompt),
+    path('prompt/summarize/', promptviews.summarize_cluster),
 
     path('prompt/explain/', promptviews.explain_prediction),
     path('prompt/revert/', promptviews.revert_prediction),

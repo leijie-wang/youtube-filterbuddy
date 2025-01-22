@@ -3,8 +3,6 @@ import json
 import logging
 from math import log
 import os
-import random
-import re
 from django.db.models import F, Q
 from django.http import JsonResponse, HttpResponseRedirect
 from django.middleware.csrf import get_token
@@ -16,9 +14,11 @@ import google_auth_oauthlib.flow
 from . import tasks
 from . import updates
 from . import utils
+from .backend_filter import BackendPromptFilter
 from .youtube import YoutubeAPI
 from .llm_buddy import LLMBuddy
 from .models import Channel, PromptFilter, FilterPrediction, Comment, User
+from .backend_filter import BackendPromptFilter
 
 
 
@@ -284,7 +284,9 @@ def initialize_prompt(request):
     description = request_data.get('description')
     example = request_data.get('example')
 
-    proposed_prompt = buddy.initialize_prompt(example)
+    proposed_prompt = buddy.initialize_prompt(
+        name, description, example
+    )
     
     return JsonResponse(
         {
@@ -295,52 +297,29 @@ def initialize_prompt(request):
 @user_verification_required
 def explore_prompt(request):
     request_data = json.loads(request.body)
-    owner = request_data.get('owner')
-    print(f"owner: {owner}")
+    filter = request_data.get('filter')
+    logger.info('filter: {filter}')
+    filter = PromptFilter.objects.filter(id=filter['id']).first()
+    if filter is None:
+        return JsonResponse(
+            {
+                'message': f"The filter does not exist."
+            }, safe=False
+        )
     
-    if not owner:
-        return JsonResponse({'error': 'Owner of the channel parameter is required'}, status=400)
-    
-    channel = Channel.objects.filter(owner__username=owner).first()
-    if not channel:
-        return JsonResponse({'error': 'Channel not found'}, status=404)
-
-    
-
-    name = request_data.get('name')
-    description = request_data.get('description')
-    prompt = {'name': name, 'description': description}
-
-    # randomly sample comments from the database to begin with
-    comments = Comment.objects.filter(video__channel=channel).order_by('posted_at')
+    # we want to sample some interesting comments for user annotations
+    comments = Comment.objects.filter(video__channel=filter.channel).order_by('posted_at')
     if not comments.exists():
         return JsonResponse({'error': 'No comments found for this channel'}, status=404)
 
-    comments = random.sample(list(comments), 50)
-    datasets = [comment.content for comment in comments]
+    buddy = LLMBuddy()
+    # sample a balanced set of positive and negative comments
+    backend_filter = BackendPromptFilter.create_backend_filter(filter)
+    interesting_comments = buddy.select_interesting_comments(backend_filter, list(comments))
     
-    llm_filter = LLMFilter(prompt, debug=False)
-    predictions = llm_filter.predict(datasets)
-
-    # summarize the predictions
-    positive_num = sum(predictions)
-    negative_num = len(predictions) - positive_num
-    print(f"There are {positive_num} positive predictions and {negative_num} negative predictions.")
-
-    comments = [comment.serialize() for comment in comments]
-    for index, comment in enumerate(comments):
-        comment["prediction"] = predictions[index]
-        # update the prediction in the database
-        FilterPrediction.objects.create(
-            filter=prompt['id'],
-            comment=comment['id'],
-            prediction=comment['prediction']
-        ).save()
-    comments = sorted(comments, key=lambda x: x["prediction"], reverse=True)
-    # sample a balanced set of positive and negative comemnts
     return JsonResponse(
-        {
-            'comments': comments
+        {   
+            'comments': interesting_comments
         }, safe=False
     )
 
@@ -370,11 +349,32 @@ def improve_prompt(request):
                 'cluster': []
             }, safe=False
         )
-    summary, cluster = buddy.improve_suggestion(filter, mistakes)
+    mistakes = [mistake.serialize() for mistake in mistakes]
+    backend_filter = BackendPromptFilter.create_backend_filter(filter)
+    clusters = buddy.generate_interesting_clusters(backend_filter, mistakes)
+    if len(clusters) > 0:
+        summary = buddy.interpret_refine_infos(backend_filter, clusters[0])
+        clusters[0]['summary'] = summary
+    
     return JsonResponse(
         {
-            'summary': summary,
-            'cluster': [prediction.serialize() for prediction in cluster]
+            'clusters': clusters
+        }, safe=False
+    )
+
+@user_verification_required
+def summarize_cluster(request):
+    request_data = json.loads(request.body)
+    cluster = request_data.get('cluster')
+    filter = request_data.get('filter')
+
+    filter = PromptFilter.objects.filter(id=filter['id']).first()
+    backend_filter = BackendPromptFilter.create_backend_filter(filter)
+    summary = buddy.interpret_refine_infos(backend_filter, cluster)
+    
+    return JsonResponse(
+        {
+            'summary': summary
         }, safe=False
     )
 
@@ -388,10 +388,11 @@ def clarify_prompt(request):
 
     prediction = FilterPrediction.objects.filter(filter=filter, comment=comment['id']).first()
     if prediction is not None:
-        followup = buddy.clarify_prompt(filter, prediction)
+        backend_filter = BackendPromptFilter.create_backend_filter(filter)
+        reflection = buddy.reflect_on_mistake(backend_filter, prediction.serialize())
         return JsonResponse(
             {
-                'followup': followup
+                'followup': reflection
             }, safe=False
         )
     else:
@@ -407,23 +408,28 @@ def refine_prompt(request):
     filter = request_data.get('filter')
 
     filter = PromptFilter.objects.filter(id=filter['id']).first()
-    comment = request_data.get('comment')
-    prediction = FilterPrediction.objects.filter(filter=filter, comment=comment['id']).first()
+    cluster = request_data.get('cluster')
+    
 
-    followup = request_data.get('followup')
-    if prediction is not None:
-        refined_prompt = buddy.refine_prompt(filter, prediction, followup)
+    # confirm that the prediction exists
+    if 'cluster' not in cluster or len(cluster['cluster']) == 0:
         return JsonResponse(
             {
-                'refinedDescription': refined_prompt
+                'message': f"There are no mistakes to refine."
             }, safe=False
         )
-    else:
-        return JsonResponse(
-            {
-                'message': f"The prediction for the comment {comment['id']} does not exist."
-            }, safe=False
-        )
+    
+
+    backend_filter = BackendPromptFilter.create_backend_filter(filter)
+    refined_filter = buddy.refine_prompt(backend_filter, cluster)
+    # TODO: while the frontend needs more structured information for better UI,
+    # we will simply use the simplest description for now.
+    return JsonResponse(
+        {
+            'refinedDescription': refined_filter.stringify_filter(),
+        }, safe=False
+    )
+    
 
 @user_verification_required
 def save_prompt(request):
@@ -431,7 +437,9 @@ def save_prompt(request):
     request_data = json.loads(request.body)
     new_filter = request_data.get('filter')
     mode = request_data.get('mode')
-    # either 'all' or 'new': 'all' means updating all comments, 'new' means updating only new comments
+    # 'all': updating all comments, 
+    # 'new': updating only new comments
+    # 'initialize': update a small set of comments
 
     if 'id' in new_filter:
         filter = PromptFilter.objects.filter(id=new_filter['id']).first()
@@ -480,10 +488,13 @@ def save_prompt(request):
             }, safe=False
         )
     else:
+        comments = utils.retrieve_predictions(filter, False)
         return JsonResponse(
             {
                 'message': f"The filter {filter.name} has not been updated as no changes were detected.",
-                'taskId': None
+                'taskId': None,
+                'predictions': comments,
+                'filter': filter.serialize()
             }, safe=False
         )
 
@@ -512,7 +523,8 @@ def explain_prediction(request):
     if prediction and prediction.explanation:
         explanation = prediction.explanation
     else:
-        explanation = buddy.explain_prediction(prediction.filter.serialize(), prediction.serialize())
+        backend_filter = BackendPromptFilter.create_backend_filter(filter)
+        explanation = buddy.explain_prediction(backend_filter, prediction.serialize())
         if prediction:
             prediction.explanation = explanation
             prediction.save()
@@ -531,8 +543,11 @@ def revert_prediction(request):
     filter = request_data.get('filter')
     comment = request_data.get('comment')
     is_mistake = request_data.get('is_mistake')
+
     # retrieve explanation for the classification decision if any
-    prediction = FilterPrediction.objects.filter(filter=filter['id'], comment=comment['id']).first()
+    prediction = FilterPrediction.objects.filter(filter_id=filter['id'], comment_id=comment['id']).first()
+    logger.info(f'prediction: {comment}')
+    logger.info(f'filter id: {filter["id"]}')
     if prediction.prediction is not None:
         # reverting the prediction only makes sense if there is a not None prediction
         prediction.groundtruth = not prediction.prediction if is_mistake else prediction.prediction

@@ -1,15 +1,17 @@
 import copy
-import comm
 import ipywidgets as widgets
 from IPython.display import display
 import logging
 import numpy as np
 import random
+import time
 
 
 from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN
 from .chat_completion import ChatCompletion
+from .models import FilterPrediction
+from .backend_filter import BackendPromptFilter
 from . import updates
 from . import utils
 
@@ -25,103 +27,90 @@ class LLMBuddy:
             'This comment should not have been caught by a positive rubric but was.',
             'This comment should have been caught by some negative rubric (including the case where there lacks such a negative rubric) but was not.',
         ]
+        self.debug = True
 
-    def initialize_prompt(self, example):
+    def initialize_prompt(self, name, description, example):
         system_prompt = """
-            A user is writing down their content moderation preferences in prompts but has difficulties clearly communicating their preferences. 
-            However, they could intuitively tell the groundtruth of a text (1 represents that the text should be removed, and 0 represents that the text should be kept).
-            Your task is to write a prompt for the user based on their labeled examples.
+            <tasks>
+                A content creator is writing down their content moderation preferences in a prompt but has difficulties clearly communicating their preferences. 
+                However, they could intuitively tell the groundtruth of a text (1 represents that the text should be caught by the prompt, and 0 represents that the text should not be caught).
+                Sometimes the content creator might also provide a draft prompt.
+                
+                If the content creator has already provided a draft prompt, then you should simply refine this draft based on the examples.
+                Otherwise, you should write a prompt for them based on their labeled examples.
+            </tasks>
 
-            ### TASK DESCRIPTION
-            STEP 1: Reason about overarching theme of the examples.
-            STEP 2: Write a prompt that would label the examples correctly.
+            <steps>
+                <step1>
+                    With the given name, labeled examples, and the optional draft prompt,
+                    reason what content moderation preferences the content creator wants to communicate.
+                </step1>
+                <step2>
+                    Based on your reasoning in step 1, write down the prompt for the content creator.
+                    Your prompt should begin with 'Comments that ...', a sentence that simply describes a category of comments but should not indicate the action (e.g., 'be removed', 'be caught', etc.)
+                    Your prompt should be clear, self-explanatory, and concise.
+                </step2>
+            </steps>
 
-            ### RULES FOR PROMPT WRITING
-            RULE 1: Begin the prompt with "Remove texts that"
+            Write your output in the following xml format.
+            <Reasoning>Your reasoning at the step 1</Reasoning>
+            <Prompt>Your prompt at the step 2</Prompt>
 
+            <examples>
+                <example>
+                    <Name>Personal insults</Name>
+                    <Text>most people are too stupid to own a gun</Text>
+                    <Groundtruth>1</Groundtruth>
+                    <Draft>remove comments that attack people as stupid.</Draft>
 
-            ### EXAMPLE 1
-            #### INPUT
-            <Text>I want to commit suicide</Text>
-            <Groundtruth>1</Groundtruth>
-            <Text>Sometimes I just to hurt him to the point that he won't recover</Text>
-            <Groundtruth>1</Groundtruth>
-            <Text>Your jokes are killing me</Text>
-            <Groundtruth>0</Groundtruth>
-            <Text>That semester just killed my motivation to try</Text>
-            <Groundtruth>0</Groundtruth>
+                    <Reasoning>
+                        Based on the example provided, the content creator wants to remove comments that directly attack others by calling them "stupid" or otherwise insulting their intelligence. 
+                        The original draft prompt is already clear but can be slightly refined to cover related terms and ensure clarity.
+                    </Reasoning>
+                    <Prompt>
+                        Comments that insult or belittle others by attacking their intelligence.
+                    </Prompt>
+                    
+                </example>
+                <example>
+                    <Name>Political Stereotypes</Name>
+                    <Text>The liberal agenda is one of censorship, crime, and hate</Text>
+                    <Groundtruth>1</Groundtruth>
+                    <Draft>Catch comments that include political stereotypes</Draft>
 
-            #### OUTPUT
-            <Reasoning>
-                The examples indicate that texts mentioning killing oneself or others should be removed.
-                However, discussions of killing in a purely metaphorical sense should not be removed.
-            </Reasoning>
-            <Prompt>
-                Remove texts that talk about a person killing another person or a person killing themselves, but not if discussed in a metaphorical sense.
-            </Prompt>
-
-            ### EXAMPLE 2
-            #### INPUT
-            <Text>That is one stupid grand jury. I guess a civil suit is the only avenue left open for justice for that poor little girl. The only legal one that is</Text>
-            <Groundtruth>0</Groundtruth>
-            <Text>Republicans are full of bullshit. Never trust them</Text>
-            <Groundtruth>0</Groundtruth>
-            <Text>She is autistic I mean look at her</Text>
-            <Groundtruth>1</Groundtruth>
-
-            #### OUTPUT
-            <Reasoning>
-            The examples indicate that texts insulting individuals by using derogatory terms should be removed.
-            However, insults of groups should not be removed.
-            </Reasoning>
-            <Prompt>
-                Remove comments that use derogatory terms to insult individuals. However, do NOT remove:
-                    - texts that use derogatory terms to insult groups
-            </Prompt>
-
-            ### EXAMPLE 3
-            #### INPUT
-            <Text>most people are too stupid to own a gun</Text>
-            <Groundtruth>1</Groundtruth>
-            <Text>She is uneducated because she didn't have the right resources offered to her growing up. That's a failing of our country</Text>
-            <Groundtruth>0</Groundtruth>
-            <Text>He's uneducated. Plain and simple</Text>
-            <Groundtruth>1</Groundtruth>
-            <Text>This girl is a joke</Text>
-            <Groundtruth>0</Groundtruth>
-
-            #### OUTPUT
-            <Reasoning>
-                The examples indicate that texts demeaning an individual's or group's intelligence should be removed.
-                However, mere explanations of low intelligence that are not demeaning should not be removed.
-            </Reasoning>
-            <Prompt>
-                Remove texts that demean a persons intelligence or multiple people's intelligence. However, do NOT remove:
-                    - texts that explain an individual or group's situation regarding intelligence, rather than demean their intelligence
-            </Prompt>
-
-            ### EXAMPLE 4
-            #### INPUT
-            <Text>These conservatives are always trying to shoot up schools</Text>
-            <Groundtruth>1</Groundtruth>
-            <Text>Republican control states are more dangerous than Democrats control states.</Text>
-            <Groundtruth>0</Groundtruth>
-            <Text>The liberal agenda is one of censorship, crime, and hate</Text>
-            <Groundtruth>1</Groundtruth>
-
-            #### OUTPUT
-            <Reasoning>
-            The examples indicate that texts negatively stereotyping political parties and their related names like "conservatives" and "liberals" should be removed.
-            However, texts that mention political parties only in relation to the states that they control should not be removed.
-            </Reasoning>
-            <Prompt>
-                Remove texts that negatively stereotype political parties (and their related names, e.g., "conservatives" and "liberals"). However, do NOT remove:
-                    - texts that mention political parties only in relation to the states that they control
-            </Prompt>
+                    <Reasoning>
+                        Based on this example, the content creator wants to target comments that stereotype or attack an entire political group,
+                        suggesting negative traits or wrongdoing purely on the basis of political affiliation. 
+                        The draft prompt already indicates catching comments that include political stereotypes, but we can refine it for clarity and consistency.
+                    </Reasoning>
+                    <Prompt>
+                        Comments that stereotype or disparage an entire political group by attributing negative traits solely based on their affiliation.
+                    </Prompt>
+                </example>
+                <example>
+                    <Name>Violent Threats</Name>
+                    <Text>
+                        All you traitors had better watch your backs. I’m going to find every last one of you, and you won't be able to run from the consequences. 
+                        It’s only a matter of time before you get what’s coming to you.
+                    </Text>
+                    <Groundtruth>1</Groundtruth>
+                    <Draft></Draft>
+                    
+                    <Reasoning>
+                        In this example, the comment explicitly threatens harm or violence against others by warning them to “watch their backs” and promising consequences. 
+                        With no draft prompt provided, the content creator’s preference can be inferred as wanting to address direct threats of violence or harm.
+                    </Reasoning>
+                    <Prompt>
+                        Comments that contain direct threats of violence or harm toward others.
+                    </Prompt>
+                </example>
+            </examples>
         """
         user_prompt = f"""
+            <Name>{name}</Name>
             <Text>{example}</Text>
             <Groundtruth>1</Groundtruth>
+            <Draft>{description}</Draft>
         """
         response = self.llm_client.chat_completion(
             system_prompt = system_prompt,
@@ -130,6 +119,71 @@ class LLMBuddy:
         )
         proposed_prompt = self.llm_client.extract_xml(response, "Prompt")
         return proposed_prompt
+
+    def select_interesting_comments(self, filter, comments, N=5):
+        """
+            Given a new filter, we want to select some interesting commments for user annotations.
+            Ideally, we want to a balanced dataset.
+        """
+        
+        # we will use a budget of 200 comments for exploration.
+        comments = random.sample(comments, 200)
+        comments = [comment.serialize() for comment in comments]
+        
+        batch_size = 50
+
+        positive_comments = []
+        negative_comments = []
+        remaining_negative_comments = []
+        while len(positive_comments) < N and len(negative_comments) < N and len(comments) > 0:
+            batch_comments = comments[:batch_size]
+            comments = comments[batch_size:]
+            predictions = filter.predict_comments_consistently(batch_comments, debug=True)
+            for comment in predictions:
+                FilterPrediction.objects.update_or_create(
+                    filter_id=filter.id,
+                    comment_id=comment['id'],
+                    defaults={'prediction': comment['prediction']}
+                )
+                if comment['prediction'] == 1:
+                    positive_comments.append(comment)
+                elif comment['prediction'] == 0 and comment['confidence'] < 1:
+                    negative_comments.append(comment)
+                else:
+                    remaining_negative_comments.append(comment)
+        
+        interesting_comments = []
+        if len(positive_comments) + len(negative_comments) >= 2 * N:
+            logger.info(f'We have {len(positive_comments)} positive comments and {len(negative_comments)} negative comments')
+            if len(positive_comments) < N:
+                interesting_comments.extend(positive_comments)
+                interesting_comments.extend(random.sample(negative_comments, 2 * N - len(positive_comments)))
+            elif len(negative_comments) < N:
+                interesting_comments.extend(negative_comments)
+                interesting_comments.extend(random.sample(positive_comments, 2 * N - len(negative_comments)))
+            else:
+                interesting_comments = positive_comments[:N] + negative_comments[:N]
+        else:
+            interesting_comments = positive_comments + negative_comments
+            needed_num = 2 * N - len(interesting_comments)
+            logger.info(f'We want to sample {needed_num} comments from the remaining negative comments')
+            # sample comments from the remaining negative comments, in particular, we sample comments with closer distance to the filter
+            comment_embeddings = [
+                self.llm_client.text_embedding(comment['content']) for comment in remaining_negative_comments
+            ]
+            filter_embedding = self.llm_client.text_embedding(filter.stringify_filter())
+            distances = cdist(comment_embeddings, filter_embedding, metric='euclidean').flatten()
+
+            comments_with_distance = list(zip(remaining_negative_comments, distances))
+            # Sort comments by ascending distance (closer first)
+            comments_with_distance.sort(key=lambda x: x[1])
+
+            # Select the top 'shortfall' comments with closest distance
+            sampled_remaining = [comment for comment, distance in comments_with_distance[:needed_num]]
+
+            # Add sampled comments to interesting_comments
+            interesting_comments.extend(sampled_remaining)
+        return interesting_comments
 
     def interpret_comment(self, comment):
         system_prompt = """
@@ -231,7 +285,7 @@ class LLMBuddy:
 
         user_prompt = f"""
             <Prompt>
-                <Rubric>{filter['description']}</Rubric>
+                {filter.stringify_filter()}
             </Prompt>
             <Comment>{prediction['content']}</Comment>
             <Label>{prediction['prediction'] * 1}</Label>
@@ -279,8 +333,8 @@ class LLMBuddy:
                     
                     <Reasoning>
                         This comment is not considered by the content creator as matching the prompt possibly because they do not want to catch
-                            - comments that insults a group ('the grand jury') rather than specific individuals.
-                            - comments that only use the term "stupid" as the only derogatory term.
+                            <reason>comments that insults a group ('the grand jury') rather than specific individuals.</reason>
+                            <reason>comments that only use the term "stupid" as the only derogatory term.</reason>
                     </Reasoning>
                 </Example>
                 <Example>
@@ -290,13 +344,17 @@ class LLMBuddy:
                     
                     <Reasoning>
                         This comment is considered by the content creator as matching the prompt possibly because they want to catch
-                            -  comments that mention 'suicide' in addition to killing others. 
+                            <reason>comments that mention 'suicide' in addition to killing others.</reason>
                     </Reasoning>
                 </Example>
             </Examples>
 
             Write your output strictly in the following xml format:
-            <Reasoning>Write down your reasoning in step 1 here.</Reasoning>
+            <Reasoning>
+                Write down your reasoning in step 1 here.
+                You should start with 'This comment is [not] considered by the content creator as matching the prompt because they [do not] want to catch',
+                after which, lists potential reasons and wrap each reason in <reason> </reason> tags.
+            </Reasoning>
         """
         user_prompt = f"""
             <Prompt>
@@ -317,6 +375,13 @@ class LLMBuddy:
     
     def cluster_mistakes_unsupervised(self, mistakes):
         """Cluster mistakes based on their similarity which could help propose a new rubric."""
+        if self.debug:
+            return [random.sample(mistakes, len(mistakes) // 2)]
+        
+        if len(mistakes) == 1:
+            # special cases: when the user only wants to refine on one mistake.
+            return [mistakes]
+
         def generate_clusters(now_mistakes, eps, min_samples=2):
             now_embeddings = [item['embedding'] for item in now_mistakes]
             now_embeddings = np.array(now_embeddings)
@@ -517,6 +582,7 @@ class LLMBuddy:
                         <Rubric>Comments that mention homocide or suicide.</Rubric>
                     </NewRubrics>
                 </Example>
+                <Example>
                     <ProblemRubric>Comments that use derogatory comments to insult other people, such as 'he is scumbag', 'douchebag'.</ProblemRubric>
                     <ProblemComments>
                         <Comments>The content creator does not want to catch comments that simply use 'fool' in the sentence.</Comments>
@@ -632,9 +698,11 @@ class LLMBuddy:
         new_filters = utils.deduplicate_filters(new_filters)
         return new_filters
     
-    def refine_prompt(self, filter, mistakes):
-        new_filters = []
+    def generate_interesting_clusters(self, filter, mistakes):
+        logger.info(f'There are in total {len(mistakes)} mistakes for the filter {filter.name}')
         for mistake in mistakes:
+            if 'reflection' not in mistake:
+                mistake['reflection'] = self.reflect_on_mistake(filter, mistake)
             mistake['embedding'] = self.llm_client.text_embedding(mistake['reflection'])
         
         refine_clusters = []
@@ -682,14 +750,186 @@ class LLMBuddy:
         
         # we will rank the clusters based on their size
         refine_clusters = sorted(refine_clusters, key=lambda x: len(x['cluster']), reverse=True)
-        for refine_info in refine_clusters[:3]:
+        # TODO: we need to further summarize each cluster.
+        return refine_clusters[:3]
+    
+    def interpret_refine_infos(self, filter, refine_cluster):
+        if self.debug:
+            return 'This is a template message for interpreting refine infos'
+
+        problem_comments_str = ""
+        for comment in refine_cluster['cluster']:
+            problem_comments_str += f"""
+                <Comment>{comment['reflection']}</Comment>
+            """
+        if refine_cluster['action'] == 'edit':
+            rubric_kind = refine_cluster['kind']
+            system_prompt = f"""
+                <Task>
+                    A content creator is writing down their content moderation preference as a prompt.
+                    Their prompts consist of three parts: 
+                        - overall description of their preferences
+                        - positive rubrics that address particular categories of comments they want to catch
+                        - negative rubrics that address particular categories of comments they do not want to catch.
+                    This prompt is then used by crowdworkers to classify comments as either 1 (the comment matches the prompt) or 0 (the comment does not match the prompt). 
+                    However, the content creator might not clearly communicate their preferences, which could lead to misclassification by crowdworkers.
+                    
+                    For a given {rubric_kind} rubric, expert linguists has identified a set of misclassified comments that demonstrate which aspects of user preferences this rubric might fail to consider.
+                    Your task is to inform the content creator about how this {rubric_kind} rubric will be further edited to incorporate these nuances in misclassified comments.
+                </Task>
+
+                <steps>
+                    <step1>
+                        Examine these misclassified comments and the expert's suggestion for each mistake, and summarize what is missing in the original rubric.
+                        Make sure you carefully read from the expert's suggestion that whether the content creator wants to catch or not catch a specific category of comments.
+                        Do not hallucinate.
+                    </step1>
+                    <step2>
+                        Examine these misclassified comments and the expert's suggestion for each mistake.
+                        Reason how you might edit this rubric to make sure that crowdworkers can correctly classify such comments in the future.
+                    </step2>
+                    <step3>
+                        Write down a sentence with less than 40 words that explains to the content creator how this {rubric_kind} rubric will be further edited to incorporate these nuances in misclassified comments.
+                        
+                        - Your explanation should be in the following format:
+                            'Your filter currently [descriptions of the relevant aspect of the filter].
+                            After examining your annotations, do you want to [summary of the edits we want to make]?'
+                            Your should try to draw a clear contrast betweeen what the current prompt fails and what you want to change it to.
+                        - Keep the language of your explanation concise and specific; avoid being verbose, ambiguous, or overly general.
+                        - We are doing this for content moderation to protect users' online experiences, so please do not refrain from using sensitive words or phrases in your rubric, which are necessary to accurately capture the user's preferences.
+                    </step3>
+                    
+                </steps>
+
+                <Examples>
+                    <Example>
+                        <ProblemRubric>Comments that talk about a person killing another person</ProblemRubric>
+                        <ProblemComments>
+                            <Comments>The content creators wants to catch comments that mention a person committing suicide.</Comments>
+                        </ProblemComments>
+
+                        <Explanation>
+                            Your filter currently only mentions killing others. Upon examining your annotations, do you also want to catch comments about committing suicide?
+                        </Explanation>
+                    </Example>
+                    <Example>
+                        <ProblemRubric>Comments that use derogatory comments to insult other people, such as 'he is scumbag', 'douchebag'.</ProblemRubric>
+                        <ProblemComments>
+                            <Comments>The content creator does not want to catch comments that simply use 'fool' in the sentence.</Comments>
+                            <Comments>The content creator wants to catch comments that use 'bastard' to insult others.</Comments>
+                        </ProblemComments>
+
+                        <Explanation>
+                            Your filter currently only lists derogatory terms like "scumbag" and "douchebag" as examples, 
+                            After examining your annotations, do you want to further catch "bastard" while excluding milder terms like "fool"?
+                        </Explanation>
+                    <Example>
+                </Examples>
+
+                Write your response in the following xml format.
+                <Summary>Your summary of what is missing in the old rubric at the step 1</Summary>
+                <Reasoning>Your reasoning of how to edit the rubric at step 2.</Reasoning>
+                <Explanation>Your explanation of how this rubric will be further edited at the step 3.</Explanation>
+            """
+            user_prompt = f"""
+                <Prompt>{filter.stringify_filter(structured=True)}</Prompt>
+                <ProblemRubric>{refine_cluster['rubric']}</ProblemRubric>      
+                <ProblemComments>
+                    {problem_comments_str}
+                </ProblemComments>
+            """
+            response = self.llm_client.chat_completion(
+                system_prompt = system_prompt,
+                user_prompt = user_prompt,
+                type="text"
+            ) 
+            logger.info(f'Interpret refine infos for editing a rubric response\n: {response}\n\n')
+            interpretation = self.llm_client.extract_xml(response, "Explanation")
+            return interpretation
+        elif refine_cluster['action'] == 'add':
+            rubric_kind = refine_cluster['kind']
+            system_prompt = f"""
+                <Task>
+                    A content creator is writing down their content moderation preference as a prompt.
+                    This prompt is then used by crowdworkers to classify comments as either 1 (the comment matches the prompt) or 0 (the comment does not match the prompt). 
+                    However, the content creator might not clearly communicate their preferences, which could lead to misclassification by crowdworkers.
+                    An expert linguist has examined these mistakes, suggested what is missing in the original prompt for each mistake.
+                    Your task is to inform the content creator about how a new {rubric_kind} rubric will be added to incorporate these nuances in misclassified comments.
+                </Task>
+
+                <steps>
+                    <step1>
+                        Examine these misclassified comments and the expert's suggestion for each mistake.
+                        Reason how you might add a new {rubric_kind} rubric to make sure that crowdworkers can correctly classify such comments in the future.
+                    </step1>
+                    <step2>
+                        Write down a sentence with less than 40 words that explains to the content creator how a new {rubric_kind} rubric will be further added to incorporate these nuances in misclassified comments.
+                        
+                        - Your explanation should be in the following format:
+                            'Your filter currently [descriptions of the relevant aspect of the filter].
+                            After examining your annotations, do you want to [summary of the new rubric we want to add]?'
+                            Your should try to draw a clear contrast betweeen what the current prompt fails and what you want to change it to.
+                        - Keep the language of your explanation concise and specific; avoid being verbose, ambiguous, or overly general.
+                        - We are doing this for content moderation to protect users' online experiences, so please do not refrain from using sensitive words or phrases in your rubric, which are necessary to accurately capture the user's preferences.
+
+                        Here are a few examples of good rubrics for your reference:
+                        - Your filter currently only lists derogatory terms like "scumbag" and "douchebag" as examples, 
+                            After examining your annotations, do you want to further catch "bastard" while excluding milder terms like "fool"?
+                        - Your filter currently only lists derogatory terms like "scumbag" and "douchebag" as examples, 
+                            After examining your annotations, do you want to further catch "bastard" while excluding milder terms like "fool"?
+                    </step2>
+                </steps>
+
+                Write your response in the following xml format.
+                <Reasoning>Your reasoning of how to add a new {rubric_kind} rubric at step 1.</Reasoning>
+                <Explanation>Your explanation of how a new rubric will be further added at the step 2.</Explanation>
+            """
+            user_prompt = f"""
+                <Prompt>{filter.stringify_filter(structured=True)}</Prompt>      
+                <ProblemComments>
+                    {problem_comments_str}
+                </ProblemComments>
+            """
+            response = self.llm_client.chat_completion(
+                system_prompt = system_prompt,
+                user_prompt = user_prompt,
+                type="text"
+            ) 
+            logger.info(f'Add new rubric response\n: {response}\n\n')
+            interpretation = self.llm_client.extract_xml(response, "Explanation")
+            return interpretation
+    
+    def refine_prompt_for_one_mistake(self, filter, mistake):
+        refine_infos = self.generate_interesting_clusters(filter, [mistake])
+        return self.refine_prompt(filter, refine_infos)
+
+    def refine_prompt(self, filter, refine_cluster):
+        if 'action' not in refine_cluster:
+            refine_clusters = self.generate_interesting_clusters(filter, refine_cluster['cluster'])
+        else:
+            refine_clusters = [refine_cluster]
+        
+        start_time = time.time()
+        new_filters = []
+        for refine_info in refine_clusters:
             if refine_info['action'] == 'add':
                 new_filters.extend(self.add_new_rubric(filter, refine_info['cluster'], refine_info['kind']))
             else:
                 new_filters.extend(self.edit_rubric(filter, refine_info['rubric'], refine_info['cluster'], refine_info['kind']))
-        return new_filters
+        end_time = time.time()
+        logger.info(f'It takes {end_time - start_time} seconds to generate prompt candidates for the filter {filter.name}')
 
-    def select_best_filters(self, filters, comments, strategy='bandit', topN=1, epochs=20, batch_size=20, exploration=5):
+        start_time = time.time()
+        # TODO: determine how should we build the training dataset and how to highlight the mistakes.
+        best_filters = self.select_best_filters(
+            new_filters, filter.training_examples, topN=1
+        )
+        end_time = time.time()
+        logger.info(f'It takes {end_time - start_time} seconds to select the best filter among {len(new_filters)} candidates')
+    
+        return best_filters[0]
+
+    def select_best_filters(self, filters, comments, strategy='bandit', topN=1, epochs=None, batch_size=20, exploration=5):
         """
         Select the best filter based on the performance on the comments.
 
@@ -727,7 +967,7 @@ class LLMBuddy:
                 logger.info(f"Selecting the best arm for round {t} as {best_arm}.")
                 return best_arm
 
-
+            epochs = epochs if epochs else int(len(comments) // batch_size * len(filters) * 0.4)
             for t in range(epochs):
                 samples = random.sample(comments, batch_size)
                 best_arm = select_best_arm(t)
@@ -749,7 +989,7 @@ class LLMBuddy:
             # return the top N best filters
             best_arms = np.argsort(values)[::-1][:topN]
             best_filters = [filters[arm] for arm in best_arms]
-            logger.info(f"Best arm selected as {best_arm} with the highest value of {values[best_arm]}.")
+            logger.info(f"Best arm selected as {best_arms[0]} with the highest value of {values[best_arms[0]]}.")
             return best_filters
         elif strategy == 'overall':
             logger.info(f"Running overall strategy with {len(filters)} filters to select the top {topN}.")

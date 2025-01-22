@@ -8,7 +8,8 @@ from . import utils as utils
 logger = logging.getLogger(__name__)
 
 class BackendPromptFilter:
-    def __init__(self, description, positives=None, negatives=None, fewShotExamples=None, **kwargs):
+
+    def __init__(self, name, description, **kwargs):
         """
             Initialize a BackendPromptFilter from a PromptFilter object.
 
@@ -17,11 +18,19 @@ class BackendPromptFilter:
             :param negatives: A list of negative rubrics with two keys: "rubric" and "examples".
             :param fewShotExamples: A list of examples with two keys: "content" and "groundtruth".
         """
-
+        self.id = kwargs.get('id', None)
+        self.name = name
         self.description = description
-        self.positives = [self.parse_rubrics(**rubric) for rubric in positives or []]
-        self.negatives = [self.parse_rubrics(**rubric) for rubric in negatives or []]
+
+        positives = kwargs.get('positives', [])
+        negatives = kwargs.get('negatives', [])
+        self.positives = [self.parse_rubrics(**rubric) for rubric in positives]
+        self.negatives = [self.parse_rubrics(**rubric) for rubric in negatives]
+
+        fewShotExamples = kwargs.get('fewShotExamples', [])
         self.few_shots = fewShotExamples
+
+        self.training_examples = kwargs.get('examples', [])
         self.histories = []
 
     @classmethod
@@ -31,10 +40,13 @@ class BackendPromptFilter:
         """
         serialized_prompt_filter = promptfilter.serialize()
         return cls(
+            name=serialized_prompt_filter['name'],
             description=serialized_prompt_filter['description'],
+            id=serialized_prompt_filter['id'],
             positives=serialized_prompt_filter['positives'],
             negatives=serialized_prompt_filter['negatives'],
-            fewShotExamples=serialized_prompt_filter['fewShotExamples']
+            fewShotExamples=serialized_prompt_filter['fewShotExamples'],
+            examples=serialized_prompt_filter['examples'],
         )
 
     def parse_rubrics(self, rubric, examples=None):
@@ -104,7 +116,7 @@ class BackendPromptFilter:
                 negative_points = f"<negatives>However, do not catch the following categories of comments:\n{negative_points}</negatives>\n"
 
         if self.few_shots:
-            few_shot_examples = f'Here are a few examples to illustrate what comments should be caught or not:\n{self.few_shots_str}'
+            few_shot_examples = f'Here are a few examples to illustrate what comments should be caught or not:\n'
             for example in self.few_shots:
                 few_shot_examples += f"\t\t- <data>{example['content']}</data><prediction>{'True' if example['groundtruth'] == 1 else 'False'}</prediction>\n"
 
@@ -128,5 +140,5 @@ class BackendPromptFilter:
     
     def predict_comments_consistently(self, comments, **kwargs):
         prompt_str = self.stringify_filter(structured=False)
-        prompt_filter = BasicPromptFilter(prompt_str)
-        return prompt_filter.predict_comments_consistently(comments, **kwargs)
+        prompt_filter = BasicPromptFilter(prompt_str, debug=True)
+        return prompt_filter.predict_comments_consistently(comments)

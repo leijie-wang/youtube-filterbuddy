@@ -1,3 +1,4 @@
+import random
 from venv import logger
 from django.db import models
 
@@ -135,8 +136,8 @@ class PromptFilter(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField()
     rubrics = models.ManyToManyField(PromptRubric, blank=True, related_name='filters')
-    examples = models.ManyToManyField('Example', blank=True, related_name='filters')
-    few_shot_examples = models.JSONField(default=list, blank=True)
+    # examples = models.ManyToManyField('Example', blank=True, related_name='filters')
+    few_shot_examples = models.ManyToManyField('Example', blank=True, related_name='filters')
 
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='filters')
     action = models.CharField(max_length=10, choices=FILTER_ACTIONS, default='nothing')
@@ -149,14 +150,16 @@ class PromptFilter(models.Model):
     def serialize(self):
         positive_rubrics = self.rubrics.filter(is_positive=True)
         negative_rubrics = self.rubrics.filter(is_positive=False)
+        groundtruths = self.matches.filter(groundtruth__isnull=False)
+
         return {
             'id': self.id,
             'name': self.name,
             'description': self.description,
             'positives': [rubric.serialize() for rubric in positive_rubrics],
             'negatives': [rubric.serialize() for rubric in negative_rubrics],
-            'examples': [example.serialize() for example in self.examples.all()],
-            'fewShotExamples': self.few_shot_examples,
+            'examples': [groundtruth.serialize() for groundtruth in groundtruths],
+            'fewShotExamples': [example.serialize() for example in self.few_shot_examples.all()],
             'action': self.action,
             'channel': self.channel.name,
             'replyMessage': self.reply_message,
@@ -173,8 +176,15 @@ class PromptFilter(models.Model):
         if mode == 'new' and self.last_run:
             # select comments that appear after the last run
             comments = list(comments.filter(posted_at__gt=self.last_run).order_by('posted_at'))
-        else:
+        elif mode == 'all':
             comments = list(comments.all())
+        elif mode == 'initialize':
+            # we randomly sample 100 comments because users might still quickly iterate on the filter
+            # and we want to avoid wasting too many API calls
+            
+            comments = list(comments.all())
+            comments = random.sample(comments, min(100, len(comments)))
+            logger.info(f'Initializing filter {self.name} with {len(comments)} comments.')
         return comments
 
 class FilterPrediction(models.Model):
@@ -188,6 +198,9 @@ class FilterPrediction(models.Model):
     prediction = models.BooleanField(blank=True, null=True)
     groundtruth = models.BooleanField(blank=True, null=True)
     explanation = models.TextField(blank=True, null=True, help_text='Optional explanation for why the comment matched/don\'t match the filter')
+
+    # TODO: think of whether we should store the mitake reflection
+    # the concern is that we need to track whether this reflection is no longer applicable because of future iterations.
 
     def __str__(self):
         return f'Prediction of {self.filter.name} on {self.comment.id} at {self.matched_at}: {self.prediction} versus the groundtruth {self.groundtruth}'

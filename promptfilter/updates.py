@@ -8,7 +8,7 @@ from .youtube import YoutubeAPI
 logger = logging.getLogger(__name__)
 
 
-def update_predictions(filter, mode):
+def update_predictions(filter, mode, now_synchronized=None):
     """When we call this function, we want to also execute the corresponding action for each True prediction."""
 
     comments = filter.retrieve_update_comments(mode)
@@ -16,7 +16,7 @@ def update_predictions(filter, mode):
         return None
     logger.info(f'Filter {filter.name} has {len(comments)} comments at the mode {mode}.')
     
-    filter.last_run = datetime.now()
+    filter.last_run = datetime.now() if now_synchronized is None else now_synchronized
     filter.save()
 
     comments = [comment.serialize() for comment in comments]

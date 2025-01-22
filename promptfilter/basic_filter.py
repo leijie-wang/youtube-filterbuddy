@@ -300,10 +300,10 @@ class BasicPromptFilter:
                 retries -= 1
         end_time = time.time()
         if predictions is not None:
-            logger.info(f"LLM model testing time for the prompt on {len(X)}: {end_time - start_time} seconds\n")
+            logger.debug(f"LLM model testing time for the prompt on {len(X)} comments: {end_time - start_time} seconds\n")
             return predictions
         else:
-            logger.error(f'LLM model testing failed for the prompt on {len(X)}')
+            logger.error(f'LLM model testing failed for the prompt on {len(X)} comments.')
             return [0] * len(X)
         
     def predict_comments(self, comments, **kwargs):
@@ -349,7 +349,7 @@ class BasicPromptFilter:
         """
         
         predictions_across_rounds = defaultdict(list)
-        logger.info(f'Predicting comments using majority votes: {rounds} rounds x batch size {batch_size}.')
+        logger.info(f'Predicting comments using majority votes: {rounds} rounds x batch size {batch_size} on {len(comments)} comments.')
         for _ in range(rounds):
             if randomized:
                 now_comments = random.sample(comments, len(comments))

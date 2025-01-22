@@ -223,7 +223,7 @@ class YoutubeAPI:
         filters = PromptFilter.objects.filter(channel=channel).all()
         for filter in filters:
             logger.info(f'Updated predictions for the filter {filter.name}')
-            updates.update_predictions(filter, 'new')
+            updates.update_predictions(filter, 'new', now_synchronized)
         
         user.second_last_sync = user.last_sync
         user.last_sync = now_synchronized

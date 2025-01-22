@@ -114,7 +114,17 @@ def retrieve_predictions(filter, whether_iterate):
             # unaffected_comments = affected_comments[200:]
     
     comments = [prediction.serialize() for prediction in predictions]
-    comments = determine_new_comments(comments, filter.channel.owner.second_last_sync)
+
+    user = filter.channel.owner
+    if filter.last_run and filter.last_run == user.last_sync:
+        # if the filter was synchronized when the whole channel was synchronized,
+        # then we want to highlight new comments that appear after the second last synchronization
+        compare_time = user.second_last_sync
+    else:
+        # otherwise, all comments are new
+        # because this filter should be just initialized.
+        compare_time = None
+    comments = determine_new_comments(comments, compare_time)
     return comments
 
 def recalculate_confidence(old_pred, new_pred, weight=1):
