@@ -1,7 +1,7 @@
-from pyexpat import model
+
 import random
 from venv import logger
-import comm
+
 from django.db import models
 
 class CommentStatus:
