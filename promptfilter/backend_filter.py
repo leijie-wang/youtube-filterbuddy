@@ -49,8 +49,9 @@ class BackendPromptFilter:
             examples=serialized_prompt_filter['examples'],
         )
 
-    def parse_rubrics(self, rubric, examples=None):
+    def parse_rubrics(self, rubric, id=None, examples=None):
         return {
+            'id': id,
             'rubric': rubric,
             'examples': examples
         }
@@ -80,9 +81,9 @@ class BackendPromptFilter:
                     old_rubric_dict['examples'].extend(comments)
         else:
             if kind == 'positive':
-                self.positives.append(self.parse_rubrics(new_rubric, comments))
+                self.positives.append(self.parse_rubrics(new_rubric, examples=comments))
             elif kind == 'negative':
-                self.negatives.append(self.parse_rubrics(new_rubric, comments))
+                self.negatives.append(self.parse_rubrics(new_rubric, examples=comments))
 
     def stringify_filter(self, structured=False):
         positive_points = ''
@@ -109,7 +110,7 @@ class BackendPromptFilter:
                     point = '\n\t\t'.join(rubric['rubric'].strip().split('\n'))
                     negative_points += f"\t\t\t- {point}\n"
             else:
-                number_of_positives = len(filter.get('positives', []))
+                number_of_positives = len(self.positives)
                 negative_points = ''
                 for index, rubric in enumerate(self.negatives):
                     negative_points += f"<rubric>{number_of_positives + index}. {rubric['rubric']}</rubric>\n"
@@ -140,5 +141,18 @@ class BackendPromptFilter:
     
     def predict_comments_consistently(self, comments, **kwargs):
         prompt_str = self.stringify_filter(structured=False)
-        prompt_filter = BasicPromptFilter(prompt_str, debug=True)
-        return prompt_filter.predict_comments_consistently(comments)
+        debug = False
+        logger.info(f'We are running LLMs with debug mode: {debug}.')
+        prompt_filter = BasicPromptFilter(prompt_str, debug=debug)
+        return prompt_filter.predict_comments_consistently(comments, rounds=3)
+
+    def serialize(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'positives': [positive for positive in self.positives],
+            'negatives': [negative for negative in self.negatives],
+            'fewShotExamples': self.few_shots,
+            'examples': self.training_examples,
+        }

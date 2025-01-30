@@ -3,6 +3,7 @@ import json
 import logging
 from math import log
 import os
+import random
 from django.db.models import F, Q
 from django.http import JsonResponse, HttpResponseRedirect
 from django.middleware.csrf import get_token
@@ -17,7 +18,7 @@ from . import utils
 from .backend_filter import BackendPromptFilter
 from .youtube import YoutubeAPI
 from .llm_buddy import LLMBuddy
-from .models import Channel, PromptFilter, FilterPrediction, Comment, User
+from .models import Channel, PromptFilter, FilterPrediction, Comment, User, MistakeCluster
 from .backend_filter import BackendPromptFilter
 
 
@@ -226,31 +227,48 @@ def request_comments(request):
 
 @user_verification_required
 def request_comment_info(request):
+    """
+        Retrieve the replies and the video information of a comment
+        If the comment itself is a reply, we will retrieve the information of the parent comment
+    
+    """
     request_data = json.loads(request.body)
     comment_id = request_data.get('comment')
     
     filter_id = request_data.get('filter')
+    # the requested comment must have the prediction
     prediction = FilterPrediction.objects.filter(filter=filter_id, comment=comment_id).first()
     if not prediction:
         return JsonResponse({'error': 'The id of the comment is required.'}, status=400)
     
+    comment_info = None
     if prediction.comment.parent is not None:
-        prediction = FilterPrediction.objects.filter(filter=filter_id, comment=prediction.comment.parent.id).first()
-    
-    comment_info = prediction.serialize()
+        # the parent of a prediction is not necessarily a prediction
+        parent_comment = prediction.comment.parent
+        # check whether the parent comment has an associated prediction
+        parent_prediction = FilterPrediction.objects.filter(filter=filter_id, comment=parent_comment.id).first()
+        if parent_prediction is None:
+            # the parent comment does not have an associated prediction
+            now_comment = parent_comment
+            comment_info = now_comment.serialize(as_prediction=True)
+        else:
+            now_comment = parent_prediction.comment
+            comment_info = parent_prediction.serialize()
+    else:
+        now_comment = prediction.comment
+        comment_info = prediction.serialize()
+
+    # because we want more info about a video in addition to the title
     comment_info['video'] = prediction.comment.video.serialize()
     comment_info['replies'] = []
-    for reply in prediction.comment.replies.all():
+    for reply in now_comment.replies.all():
         # check whether the reply has an associated prediction
         reply_prediction = FilterPrediction.objects.filter(filter=filter_id, comment=reply.id).first()
         if reply_prediction:
             reply_info = reply_prediction.serialize()
         else:
             # this is to make sure the reply has the same structure as the comment so that the frontend can render it
-            reply_info = reply.serialize()
-            reply_info['prediction'] = None
-            reply_info['explanation'] = ''
-            reply_info['groundtruth'] = None
+            reply_info = reply.serialize(as_prediction=True)
         comment_info['replies'].append(reply_info)
         
     return JsonResponse(
@@ -306,17 +324,13 @@ def explore_prompt(request):
                 'message': f"The filter does not exist."
             }, safe=False
         )
-    
-    # we want to sample some interesting comments for user annotations
-    comments = Comment.objects.filter(video__channel=filter.channel).order_by('posted_at')
-    if not comments.exists():
-        return JsonResponse({'error': 'No comments found for this channel'}, status=404)
 
     buddy = LLMBuddy()
     # sample a balanced set of positive and negative comments
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
-    interesting_comments = buddy.select_interesting_comments(backend_filter, list(comments))
-    
+    interesting_comments = buddy.select_interesting_comments(backend_filter)
+    # randomize the order of the comments
+    interesting_comments = random.sample(interesting_comments, len(interesting_comments))
     return JsonResponse(
         {   
             'comments': interesting_comments
@@ -324,40 +338,79 @@ def explore_prompt(request):
     )
 
 @user_verification_required
+def save_groundtruth(request):
+    """
+        Save the groundtruth of a list of comments.
+    """
+    request_data = json.loads(request.body)
+    filter = request_data.get('filter')
+    comments = request_data.get('comments')
+
+    for comment in comments:
+        prediction = FilterPrediction.objects.filter(filter=filter['id'], comment=comment['id']).first()
+        if prediction is not None:
+            prediction.groundtruth = comment['groundtruth']
+            prediction.save()
+    return JsonResponse(
+        {
+            'message': f"The groundtruths of the filter {filter['name']} for {len(comments)} has been successfully updated."
+        }, safe=False
+    )
+    
+@user_verification_required
 def improve_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
+
+    clusters = None
+    task_id = None
 
     filter = PromptFilter.objects.filter(id=filter['id']).first()
     if filter is None:
         return JsonResponse(
             {
-                'message': f"The filter {filter['name']} does not exist."
+                'message': f"The filter {filter['name']} does not exist.",
+                'clusters': None,
+                'taskId': None
+
             }, safe=False
         )
 
-    mistakes = FilterPrediction.objects.filter(
-            groundtruth__isnull=False, filter=filter
-        ).exclude(
-            groundtruth=F('prediction')
-        )
+    # retrieve clusters for this filter and serialize them
+    cluster_instances = MistakeCluster.objects.filter(filter=filter)
+    if cluster_instances.count() > 0:
+        clusters = [cluster.serialize() for cluster in cluster_instances]
+        # ensure that the first cluster has an non-empty field
+        if not clusters[0]['summary']:
+            backend_filter = BackendPromptFilter.create_backend_filter(filter)
+            summary = buddy.interpret_refine_infos(backend_filter, clusters[0])
+            clusters[0]['summary'] = summary
+            cluster_instances[0].summary = summary
+            cluster_instances[0].save()
+    else:    
+        mistake_instances = FilterPrediction.objects.filter(
+                groundtruth__isnull=False, filter=filter
+            ).exclude(
+                groundtruth=F('prediction')
+            )
 
-    if mistakes.count() == 0:
-        return JsonResponse(
-            {
-                'summary': '',
-                'cluster': []
-            }, safe=False
-        )
-    mistakes = [mistake.serialize() for mistake in mistakes]
-    backend_filter = BackendPromptFilter.create_backend_filter(filter)
-    clusters = buddy.generate_interesting_clusters(backend_filter, mistakes)
-    if len(clusters) > 0:
-        summary = buddy.interpret_refine_infos(backend_filter, clusters[0])
-        clusters[0]['summary'] = summary
+        if mistake_instances.count() == 0:
+            return JsonResponse(
+                {   
+                    'message': f"There are no mistakes to improve for the filter {filter.name}.",
+                    'clusters': [],
+                    'taskId': None
+                }, safe=False
+            )
+        
+        task = tasks.generate_clusters_task.delay(filter.id, [mistake.serialize() for mistake in mistake_instances])
+        task_id = task.id
+        
     
     return JsonResponse(
-        {
+        {   
+            'message': f"We have started to generate clusters for the filter {filter.name}.",
+            'taskId': task_id,
             'clusters': clusters
         }, safe=False
     )
@@ -390,6 +443,9 @@ def clarify_prompt(request):
     if prediction is not None:
         backend_filter = BackendPromptFilter.create_backend_filter(filter)
         reflection = buddy.reflect_on_mistake(backend_filter, prediction.serialize())
+        # update the reflection field of this prediction
+        prediction.reflection = reflection
+        prediction.save()
         return JsonResponse(
             {
                 'followup': reflection
@@ -426,20 +482,16 @@ def refine_prompt(request):
     # we will simply use the simplest description for now.
     return JsonResponse(
         {
-            'refinedDescription': refined_filter.stringify_filter(),
+            'refinedFilter': refined_filter.serialize()
         }, safe=False
     )
     
-
 @user_verification_required
 def save_prompt(request):
 
     request_data = json.loads(request.body)
     new_filter = request_data.get('filter')
     mode = request_data.get('mode')
-    # 'all': updating all comments, 
-    # 'new': updating only new comments
-    # 'initialize': update a small set of comments
 
     if 'id' in new_filter:
         filter = PromptFilter.objects.filter(id=new_filter['id']).first()
@@ -450,14 +502,11 @@ def save_prompt(request):
         filter.save()
     logger.info(f"filter that is saved: {filter}")
 
-    if filter.last_run is None or filter.description != new_filter['description']:
+    if filter.last_run is None or filter.whether_changed(new_filter):
         # if the filter has not been run before or the description has been updated
-        logger.info(f"Updating the description of the filter {filter.name}")
+        logger.info(f"Detected changes in the filter {filter.name}")
 
-        filter.description = new_filter['description']
-        # it is possible that the user updates both the description and the action.
-        if 'action' in new_filter:
-            filter.action = new_filter.get('action')
+        filter.update_filter(new_filter)
         filter.save()
         
         task = tasks.update_predictions_task.delay(filter.id, mode)
@@ -515,11 +564,11 @@ def explain_prediction(request):
     request_data = json.loads(request.body)
     
     filter = request_data.get('filter')
-    # TODO: for newly initialized filters, the filter id is not available
+    filter = PromptFilter.objects.filter(id=filter['id']).first()
     comment = request_data.get('comment')
-
+    
     # retrieve explanation for the classification decision if any
-    prediction = FilterPrediction.objects.filter(filter_id=filter['id'], comment_id=comment['id']).first()
+    prediction = FilterPrediction.objects.filter(filter_id=filter, comment_id=comment['id']).first()
     if prediction and prediction.explanation:
         explanation = prediction.explanation
     else:

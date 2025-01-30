@@ -60,11 +60,15 @@ def populate_filters(channel):
         print("Prompt filters already exist for the channel.")
         return
 
+    # prompt_filters = [
+    #     {"name": "Sexually Explicit Content", "description": "Comments that contain sexually explicit or inappropriate content not suitable for public viewing."},
+    #     {"name": "Spam", "description": "Comments that are repetitive, irrelevant, or promotional in nature."},
+    #     # {"name": "Off-Topic", "description": "Comments that are unrelated to the video content or discussion."},
+    # ]
     prompt_filters = [
-        {"name": "Sexually Explicit Content", "description": "Comments that contain sexually explicit or inappropriate content not suitable for public viewing."},
-        {"name": "Spam", "description": "Comments that are repetitive, irrelevant, or promotional in nature."},
-        # {"name": "Off-Topic", "description": "Comments that are unrelated to the video content or discussion."},
+        {"name": "Political Hate Speech", "description": "Comments that use derogatory insults towards specific political groups"},
     ]
+    
     for info in prompt_filters:
         filter = PromptFilter(channel=channel, name=info['name'], description=info['description'])
         filter.save()
@@ -83,35 +87,23 @@ def determine_new_comments(comments, time_cutoff):
     return comments
 
 def retrieve_predictions(filter, whether_iterate):
+    N = 200
     if not whether_iterate:
+        # if the mode is not iteration, we want to retrieve all the predictions
         predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
         logger.info(f"predictions: {len(predictions)}")
     else:
-        predictions = FilterPrediction.objects.filter(filter=filter).annotate(
-            # Assign a ranking for groundtruth (more important)
-            groundtruth_rank=Case(
-                When(groundtruth=True, then=Value(1)),   # True (positive) ranked highest
-                When(groundtruth=False, then=Value(1)),  # False (negative) has the same rank as True
-                When(groundtruth=None, then=Value(2)),   # None ranked lowest
-                output_field=IntegerField(),
-            ),
-            # Assign a ranking for prediction (less important)
-            prediction_rank=Case(
-                When(prediction=True, then=Value(1)),    # True (positive) ranked highest
-                When(prediction=False, then=Value(2)),   # False (negative) ranked second
-                When(prediction=None, then=Value(3)),    # None ranked lowest
-                output_field=IntegerField(),
-            )
-        ).order_by('groundtruth_rank', 'prediction_rank', '-comment__posted_at')
-
-        prioritized_number = FilterPrediction.objects.filter(Q(prediction=True) | Q(groundtruth__isnull=False), filter=filter).count()
-        logger.info(f"prioritized_number: {prioritized_number}")
-        if prioritized_number > 200:
-            predictions = predictions[:prioritized_number]
-            # unaffected_comments = affected_comments[prioritized_number:]
-        else:
-            predictions = predictions[:200]
-            # unaffected_comments = affected_comments[200:]
+        # if the mode is iteration, we want to retrieve predictions that have groundtruths
+        predictions = (
+            FilterPrediction.objects
+            .filter(filter=filter, groundtruth__isnull=False, prediction__isnull=False)
+            # True sorts higher than False if we do descending order on the Boolean field
+            .order_by('-prediction', '-comment__posted_at')
+        )
+        logger.info(f"predictions at the iteration mode: {len(predictions)}")
+        # if there are too many predictions, we want to sample the first N predictions
+        predictions = predictions[:N]
+       
     
     comments = [prediction.serialize() for prediction in predictions]
 

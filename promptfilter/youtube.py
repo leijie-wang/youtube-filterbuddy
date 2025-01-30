@@ -158,7 +158,7 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=20, published_after=None):
+    def retrieve_comments(self, video_id, comment_num=100, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T') + 'Z'
         

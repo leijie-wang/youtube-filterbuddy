@@ -37,6 +37,7 @@ urlpatterns = [
     path('prompt/initialize/', promptviews.initialize_prompt),
     
     path('prompt/explore/', promptviews.explore_prompt),
+    path('prompt/groundtruth/', promptviews.save_groundtruth),
     path('prompt/save/', promptviews.save_prompt),
     path('prompt/delete/', promptviews.delete_prompt),
     path('prompt/improve/', promptviews.improve_prompt),

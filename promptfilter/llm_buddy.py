@@ -1,7 +1,9 @@
 import copy
 import ipywidgets as widgets
 from IPython.display import display
+import threading
 import logging
+import math
 import numpy as np
 import random
 import time
@@ -10,8 +12,7 @@ import time
 from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN
 from .chat_completion import ChatCompletion
-from .models import FilterPrediction
-from .backend_filter import BackendPromptFilter
+from .models import FilterPrediction, Comment
 from . import updates
 from . import utils
 
@@ -120,38 +121,52 @@ class LLMBuddy:
         proposed_prompt = self.llm_client.extract_xml(response, "Prompt")
         return proposed_prompt
 
-    def select_interesting_comments(self, filter, comments, N=5):
+    def select_interesting_comments(self, filter, N=5):
         """
             Given a new filter, we want to select some interesting commments for user annotations.
-            Ideally, we want to a balanced dataset.
+            Ideally, we want to a balanced dataset with N positive comments and N negative comments.
+            But 2N comments that are interesting enough are also acceptable.
         """
-        
-        # we will use a budget of 200 comments for exploration.
-        comments = random.sample(comments, 200)
-        comments = [comment.serialize() for comment in comments]
-        
-        batch_size = 50
-
         positive_comments = []
         negative_comments = []
         remaining_negative_comments = []
-        while len(positive_comments) < N and len(negative_comments) < N and len(comments) > 0:
-            batch_comments = comments[:batch_size]
-            comments = comments[batch_size:]
-            predictions = filter.predict_comments_consistently(batch_comments, debug=True)
-            for comment in predictions:
+
+        def sample_interesting_comments(now_predictions):
+            for pred in now_predictions:
+                if pred['prediction'] == 1:
+                    positive_comments.append(pred)
+                elif pred['prediction'] == 0 and pred['confidence'] < 1:
+                    negative_comments.append(pred)
+                else:
+                    remaining_negative_comments.append(pred)
+        
+        def produce_new_predictions(batch_size=50):
+            # we will first sample comments that do not predictions yet
+            new_comments = Comment.objects.exclude(predictions__filter_id=filter.id).all()
+            new_comments = new_comments[:batch_size]
+            new_comments = [comment.serialize() for comment in new_comments]
+            new_predictions = filter.predict_comments_consistently(new_comments, debug=True)
+            for pred in new_predictions:
                 FilterPrediction.objects.update_or_create(
                     filter_id=filter.id,
-                    comment_id=comment['id'],
-                    defaults={'prediction': comment['prediction']}
+                    comment_id=pred['id'],
+                    defaults={
+                        'prediction': pred['prediction'],
+                        'confidence': pred['confidence'],
+                    }
                 )
-                if comment['prediction'] == 1:
-                    positive_comments.append(comment)
-                elif comment['prediction'] == 0 and comment['confidence'] < 1:
-                    negative_comments.append(comment)
-                else:
-                    remaining_negative_comments.append(comment)
-        
+            return new_predictions
+
+        predictions = FilterPrediction.objects.filter(filter_id=filter.id, groundtruth__isnull=True).all()
+        predictions = [pred.serialize() for pred in predictions]
+        # determine the maximum number of new comments we will explore
+        round = 0
+        while ((len(positive_comments) + len(negative_comments)) < 2 * N) and round < 2:
+            if not predictions:
+                predictions = produce_new_predictions()
+            sample_interesting_comments(predictions)
+            
+        # based on the number of positive and negative comments, we will sample interesting comments
         interesting_comments = []
         if len(positive_comments) + len(negative_comments) >= 2 * N:
             logger.info(f'We have {len(positive_comments)} positive comments and {len(negative_comments)} negative comments')
@@ -373,11 +388,40 @@ class LLMBuddy:
         reasons = self.llm_client.extract_xml(response, "Reasoning")
         return reasons
     
+    def reflect_on_mistakes_parellel(self, filter, mistakes):
+        reflections = [{}] * len(mistakes)  # Placeholder for reflections
+        threads = []
+
+        def process_reflection(index, mistake):
+            """Compute reflection for a single mistake and store it in the reflections list."""
+            try:
+                if mistake['reflection']:
+                    reflection = mistake['reflection']
+                else:
+                    reflection = self.reflect_on_mistake(filter, mistake)
+                
+                embedding = self.llm_client.text_embedding(reflection)
+                reflections[index] = {
+                    'reflection': reflection,
+                    'embedding': embedding
+                }
+            except Exception as e:
+                print(f"Error computing reflection for mistake at index {index}: {e}")
+
+        # Start threads
+        for i, mistake in enumerate(mistakes):
+            thread = threading.Thread(target=process_reflection, args=(i, mistake))
+            thread.start()
+            threads.append(thread)
+
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+
+        return reflections
+
     def cluster_mistakes_unsupervised(self, mistakes):
         """Cluster mistakes based on their similarity which could help propose a new rubric."""
-        if self.debug:
-            return [random.sample(mistakes, len(mistakes) // 2)]
-        
         if len(mistakes) == 1:
             # special cases: when the user only wants to refine on one mistake.
             return [mistakes]
@@ -432,10 +476,7 @@ class LLMBuddy:
             if dist < threshold:
                 clustered_mistakes[rubrics[min_idx]['rubric']].append(mistakes[i])
         
-        for rubric, mistakes in clustered_mistakes.items():       
-            logger.info(f'Clustered {len(mistakes)} mistakes for rubric: {rubric}')
-            if len(mistakes) == 0:
-                del clustered_mistakes[rubric]
+        clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if mistakes }
             
         return clustered_mistakes
 
@@ -700,10 +741,10 @@ class LLMBuddy:
     
     def generate_interesting_clusters(self, filter, mistakes):
         logger.info(f'There are in total {len(mistakes)} mistakes for the filter {filter.name}')
-        for mistake in mistakes:
-            if 'reflection' not in mistake:
-                mistake['reflection'] = self.reflect_on_mistake(filter, mistake)
-            mistake['embedding'] = self.llm_client.text_embedding(mistake['reflection'])
+        reflections = self.reflect_on_mistakes_parellel(filter, mistakes)
+        for index, mistake in enumerate(mistakes):
+            mistake['reflection'] = reflections[index]['reflection']
+            mistake['embedding'] = reflections[index]['embedding']
         
         refine_clusters = []
         # if we want to add a new rubric
@@ -715,7 +756,7 @@ class LLMBuddy:
                 refine_clusters.append({
                     'cluster': cluster,
                     'kind': 'negative',
-                    'action': 'add'
+                    'action': 'add',
                 })
         
         if false_negativse:
@@ -754,9 +795,6 @@ class LLMBuddy:
         return refine_clusters[:3]
     
     def interpret_refine_infos(self, filter, refine_cluster):
-        if self.debug:
-            return 'This is a template message for interpreting refine infos'
-
         problem_comments_str = ""
         for comment in refine_cluster['cluster']:
             problem_comments_str += f"""
@@ -921,12 +959,15 @@ class LLMBuddy:
 
         start_time = time.time()
         # TODO: determine how should we build the training dataset and how to highlight the mistakes.
+        # best_filters = self.select_best_filters(
+        #     new_filters, filter.training_examples, topN=1
+        # )
         best_filters = self.select_best_filters(
-            new_filters, filter.training_examples, topN=1
+            new_filters, refine_cluster['cluster'], topN=1
         )
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to select the best filter among {len(new_filters)} candidates')
-    
+
         return best_filters[0]
 
     def select_best_filters(self, filters, comments, strategy='bandit', topN=1, epochs=None, batch_size=20, exploration=5):
@@ -943,10 +984,13 @@ class LLMBuddy:
 
         @return: a list of the best filters
         """
+        if(len(comments) < 2 * batch_size):
+            strategy = 'overall'
+            logger.info(f'Not enough comments to run bandit strategy. Switching to overall strategy.')
 
         if strategy == 'bandit':
-            logger.info(f"Running bandit strategy with {len(filters)} filters to select the top {topN}.")
-            logger.info(f'\tWith {epochs} rounds, batch size {batch_size}, and exploration factor {exploration}.')
+            logger.info(f"Running bandit strategy with {len(filters)} filters to select the top {topN} from {len(comments)} comments.")
+            
             records = []
             counts = [0] * len(filters)
             values = [0] * len(filters)
@@ -967,17 +1011,18 @@ class LLMBuddy:
                 logger.info(f"Selecting the best arm for round {t} as {best_arm}.")
                 return best_arm
 
-            epochs = epochs if epochs else int(len(comments) // batch_size * len(filters) * 0.4)
+            epochs = epochs if epochs else math.ceil(math.ceil(len(comments) / batch_size) * len(filters) * 0.4)
+            logger.info(f'\tWith {epochs} rounds, batch size {batch_size}, and exploration factor {exploration}.')
             for t in range(epochs):
                 samples = random.sample(comments, batch_size)
                 best_arm = select_best_arm(t)
                 counts[best_arm] += 1
                 best_filter = filters[best_arm]
 
-                mistakes_copy = [comment.copy() for comment in samples]
+                comments_copy = [comment.copy() for comment in samples]
 
-                mistakes_copy = best_filter.predict_comments_consistently(mistakes_copy)
-                performance = utils.eval_performance(mistakes_copy, best_filter, print_comments=False)
+                comments_copy = best_filter.predict_comments_consistently(comments_copy)
+                performance = utils.eval_performance(comments_copy, print_comments=False)
                 values[best_arm] += performance['f1'] / counts[best_arm]
 
                 actual_best_arm = np.argmax(values)
@@ -996,10 +1041,12 @@ class LLMBuddy:
             performances = []
             for new_filter in filters:
                 print(f'Evaluate the filter:\n {new_filter.stringify_filter(structured=False)}\n')
-                mistakes_copy = [comment.copy() for comment in comments]
-                mistakes_copy = new_filter.predict_comments_consistently(mistakes_copy)
-                performance = utils.eval_performance(mistakes_copy, new_filter, print_comments=False)
+                comments_copy = [comment.copy() for comment in comments]
+                comments_copy = new_filter.predict_comments_consistently(comments_copy)
+                performance = utils.eval_performance(comments_copy, print_comments=False)
                 performances.append(performance['f1'])
+                if performance['accuracy'] > 0.9:
+                    return [new_filter]
                 print('Performance:', performance)
             # return the top N best filters
             best_indices = np.argsort(performances)[::-1][:topN]
