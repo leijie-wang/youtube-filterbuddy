@@ -222,3 +222,11 @@ LOGGING = {
 CELERY_BROKER_URL = 'amqp://guest:guest@localhost'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'  # Redis backend URL
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+CELERY_BEAT_SCHEDULE = {
+    'daily-sync-youtube-comments': {
+        'task': 'promptfilter.tasks.sync_all_youtube_accounts',
+        'schedule': 86400.0,  # 24 hours in seconds
+        # 'schedule': 30.0,  # 1 minute for testing
+    },
+}

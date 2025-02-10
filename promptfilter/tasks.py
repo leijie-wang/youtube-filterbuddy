@@ -69,3 +69,13 @@ def synchronize_youtube_task(username):
     youtube.synchronize(user)
     logger.info(f"Synchronization for user {username} has been completed.")
     return { 'message': 'Synchronization has been completed.' }
+
+@shared_task
+def sync_all_youtube_accounts():
+    logger.info(f"Synchronizing all youtube accounts")
+    users = User.objects.all()
+    for user in users:
+        youtube = YoutubeAPI(user.oauth_credentials)
+        youtube.synchronize(user)
+    logger.info(f"Synchronization for all {len(users)} users has been completed.")
+    return { 'message': 'Synchronization for all users has been completed.' }

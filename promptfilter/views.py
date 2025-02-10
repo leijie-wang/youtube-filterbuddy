@@ -55,44 +55,8 @@ def user_verification_required(view_func):
         return view_func(request, *args, **kwargs)
     return _wrapped_view
 
-def authorize_user(request):
-    # for the test user
-    request_data = json.loads(request.body)
-    if request_data.get('whether_test', False):
-        logger.info("Creating a test user")
-        user = User.objects.filter(username='TheYoungTurks').first()
-        if not user:
-            # create a test user
-            user = utils.populate_test_users()
-            utils.populate_filters(user.channel)
-        channel = Channel.objects.filter(owner=user).first()
-        request.session['credentials'] = user.oauth_credentials
-        return JsonResponse(
-            {
-                'username': user.username,
-                'channel': channel.name,
-                'isAuthorized': True,
-                'redirectUrl': f'{FRONTEND_URL}/overview'
-            }, safe=False
-        )
-    
-    if verify_user(request):
-        logger.info("User has already been authorized.")
-        channel_id = request.session['credentials']['myChannelId']
-        channel = Channel.objects.filter(id=channel_id).first()
-        user = channel.owner
-        return JsonResponse(
-            {
-                'username': user.username,
-                'channel': channel.name,
-                'isAuthorized': True,
-                'redirectUrl': f'{FRONTEND_URL}/overview'
-            }, safe=False
-        )
-    
-    if IS_LOCAL:
-        return JsonResponse({'redirectUrl': '', 'isAuthorized': False})
-
+def __authorize_oauth():
+    # for authentication with oauth
     flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
         'client_secret.json',
         scopes=['https://www.googleapis.com/auth/youtube.force-ssl']
@@ -110,6 +74,89 @@ def authorize_user(request):
     # redirect users to the given url
     return JsonResponse({'redirectUrl': authorization_url, 'isAuthorized': False})
 
+@user_verification_required
+def switch_mode(request):
+    request_data = json.loads(request.body)
+    current_mode = request_data.get('current_mode', 'auto')
+    channel_id = request.session['credentials']['myChannelId']
+
+    channel = Channel.objects.filter(id=channel_id).first()
+    user = channel.owner
+    
+    logger.info(f'The user {user.username} wants to switch from {current_mode} mode.')
+    if current_mode == 'auto':
+        user.moderation_access = False
+        # reset the oauth credentials to a fake one
+        user.oauth_credentials = utils.populate_fake_credentials(channel_id)
+        user.save()
+        return JsonResponse(
+            {
+                'message': f"User {user.username} has been switched to manual mode."
+            }, safe=False
+        )
+    elif current_mode == 'manual':
+        if IS_LOCAL:
+            user.moderation_access = True
+            user.save()
+            return JsonResponse(
+                {
+                    'message': f"User {user.username} has been switched to auto mode, but we cannot authorize the user in a local environment."
+                }, safe=False
+            )
+        
+        # in this case, the moderation access will be updated when creating the account.
+        return __authorize_oauth()
+    
+def authorize_user(request):
+    # for the test user
+    request_data = json.loads(request.body)
+
+
+    if verify_user(request):
+        logger.info("User has already been authorized.")
+        channel_id = request.session['credentials']['myChannelId']
+        channel = Channel.objects.filter(id=channel_id).first()
+        user = channel.owner
+
+        return JsonResponse(
+            {
+                'username': user.username,
+                'channel': channel.name,
+                'isAuthorized': True,
+                'redirectUrl': f'{FRONTEND_URL}/overview'
+            }, safe=False
+        )
+
+    # for authentication without oauth
+    if request_data.get('whether_test', False):
+        handle = request_data.get('handle', None) or 'TheYoungTurks'
+        logger.info(f"handle: {handle}")
+        if handle is not None:
+            user = User.objects.filter(username=handle).first()
+            if not user:
+                # create a test user
+                youtube = YoutubeAPI({})
+                user, channel = youtube.create_account(oauth=False, handle=handle)
+            else:
+                channel = Channel.objects.filter(owner=user).first()
+            request.session['credentials'] = user.oauth_credentials
+            logger.info(f"user: {user}; channel: {channel}; credentials: {request.session['credentials']}")
+            return JsonResponse(
+                {
+                    'username': user.username,
+                    'channel': channel.name,
+                    'isAuthorized': True,
+                    'redirectUrl': f'{FRONTEND_URL}/overview'
+                }, safe=False
+            )
+    
+    if IS_LOCAL and not request_data.get('whether_test', False):
+        # if it is local, then we only support logging in without oauth
+        logger.warning("We cannot authorize the user in a local environment.")
+        return JsonResponse({'redirectUrl': '', 'isAuthorized': False})
+
+    return __authorize_oauth()
+    
 def oauth2_callback(request):
     state = request.session.get('state')
     flow = google_auth_oauthlib.flow.Flow.from_client_secrets_file(
@@ -180,6 +227,7 @@ def request_user(request):
         return JsonResponse(
             {
                 'user': owner.username,
+                'permissionMode': 'auto' if owner.moderation_access else 'manual',
                 'channel': owner.channel.name,
                 'avatar': owner.avatar
             }, safe=False
@@ -199,9 +247,10 @@ def request_filters(request):
         return JsonResponse({'error': 'Channel not found'}, status=404)
     
     filters = PromptFilter.objects.filter(channel=channel)
-    
+    numbers_of_new_comments = [utils.number_of_new_comments(filter) for filter in filters]
     filters_data = [ filter.serialize() for filter in filters]
-
+    for index, filter in enumerate(filters_data):
+        filter['numberOfNewCaughtComments'] = numbers_of_new_comments[index]
     return JsonResponse(
             {'filters': filters_data}, 
             safe=False
@@ -387,17 +436,18 @@ def improve_prompt(request):
             clusters[0]['summary'] = summary
             cluster_instances[0].summary = summary
             cluster_instances[0].save()
-    else:    
+    else:
+        minimum_mistake_count = 10
         mistake_instances = FilterPrediction.objects.filter(
                 groundtruth__isnull=False, filter=filter
             ).exclude(
                 groundtruth=F('prediction')
             )
 
-        if mistake_instances.count() == 0:
+        if mistake_instances.count() < minimum_mistake_count:
             return JsonResponse(
                 {   
-                    'message': f"There are no mistakes to improve for the filter {filter.name}.",
+                    'message': f"There are less than {minimum_mistake_count} mistakes to improve for the filter {filter.name}.",
                     'clusters': [],
                     'taskId': None
                 }, safe=False

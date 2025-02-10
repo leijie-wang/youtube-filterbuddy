@@ -29,9 +29,21 @@ def random_time(zerotime=None):
     random_time = zerotime + timedelta(days=days_after, hours=random.randint(0, 23), minutes=random.randint(0, 59))
     return random_time
 
+
+def populate_fake_credentials(channel_id):
+    return {
+        'token': 'FAKE_TOKEN',
+        'refresh_token': "FAKE_REFRESH_TOKEN",
+        'token_uri': 'https://127.0.0.1',
+        'client_id': 'FAKE_CLIENT_ID',
+        'client_secret': 'FAKE_CLIENT_SECRET',
+        'scopes': [],
+        'myChannelId': channel_id
+    }
+
 def populate_test_users():
     user = User(
-        username='TheYoungTurks', 
+        username='@TheYoungTurks', 
         avatar='https://images.pexels.com/photos/1108099/pexels-photo-1108099.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2',
         oauth_credentials={
             'token': 'FAKE_TOKEN',
@@ -86,8 +98,22 @@ def determine_new_comments(comments, time_cutoff):
         comment['new'] = time_cutoff is None or comment['posted_at'] > time_cutoff
     return comments
 
+def determine_time_cutoff(filter):
+    user = filter.channel.owner
+    if filter.last_run and filter.last_run == user.last_sync:
+        # if the filter was synchronized when the whole channel was synchronized,
+        # then we want to highlight new comments that appear after the second last synchronization
+        compare_time = user.second_last_sync
+    else:
+        # otherwise, all comments are new
+        # because this filter should be just initialized.
+        compare_time = None
+    return compare_time
+
+
 def retrieve_predictions(filter, whether_iterate):
     N = 200
+    
     if not whether_iterate:
         # if the mode is not iteration, we want to retrieve all the predictions
         predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
@@ -107,17 +133,19 @@ def retrieve_predictions(filter, whether_iterate):
     
     comments = [prediction.serialize() for prediction in predictions]
 
-    user = filter.channel.owner
-    if filter.last_run and filter.last_run == user.last_sync:
-        # if the filter was synchronized when the whole channel was synchronized,
-        # then we want to highlight new comments that appear after the second last synchronization
-        compare_time = user.second_last_sync
-    else:
-        # otherwise, all comments are new
-        # because this filter should be just initialized.
-        compare_time = None
+    compare_time = determine_time_cutoff(filter)
     comments = determine_new_comments(comments, compare_time)
     return comments
+
+def number_of_new_comments(filter):
+    """
+        We want to count the number of new comments since the second last synchronization
+    """
+    compare_time = determine_time_cutoff(filter)
+    predicitions = FilterPrediction.objects.filter(record=filter, prediction=True)
+    if compare_time is not None:
+        predicitions = predicitions.filter(comment__posted_at__gt=compare_time)
+    return predicitions.count()
 
 def recalculate_confidence(old_pred, new_pred, weight=1):
     """

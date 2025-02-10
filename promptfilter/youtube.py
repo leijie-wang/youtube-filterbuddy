@@ -19,13 +19,54 @@ logger = logging.getLogger(__name__)
 class YoutubeAPI:
 
     def __init__(self, credentials):
-        if isinstance(credentials, dict):
-            self.credentials = credentials
+        if credentials:
+            if isinstance(credentials, dict):
+                self.credentials = credentials
+            else:
+                self.credentials = utils.credentials_to_dict(credentials)
+        
+            filtered_credentials = {k: v for k, v in self.credentials.items() if k != 'myChannelId'}
+            self.private_youtube = build('youtube', 'v3', credentials=Credentials(**filtered_credentials))
         else:
-            self.credentials = utils.credentials_to_dict(credentials)
-        filtered_credentials = {k: v for k, v in self.credentials.items() if k != 'myChannelId'}
-        self.private_youtube = build('youtube', 'v3', credentials=Credentials(**filtered_credentials))
+            self.credentials = {}
+            self.private_youtube = None
+
         self.youtube = build('youtube', 'v3', developerKey='AIzaSyBBdr6RyGr0fRnjAoHzn-NXRmwy_tiYL5A')
+
+    def retrieve_account_with_handle(self, handle):
+        # Step 1: Search for the channel using the handle
+        search_response = self.youtube.search().list(
+            q=handle,
+            part='id,snippet',
+            type='channel',
+            maxResults=1
+        ).execute()
+        
+        if not search_response.get('items'):
+            return None
+        
+        channel_id = search_response['items'][0]['id']['channelId']
+        
+        # Step 2: Get detailed channel information
+        channel_response = self.youtube.channels().list(
+            id=channel_id,
+            part='snippet'
+        ).execute()
+        
+        if not channel_response.get('items'):
+            return None
+        
+        channel_info = channel_response['items'][0]['snippet']
+        
+        return {
+            'username': handle,
+            'avatar': channel_info['thumbnails']['default']['url'],
+            'channel': {
+                'name': channel_info['title'],
+                'id': channel_id
+            }
+        }
+            
 
     def retrieve_channels(self):
         channel = self.youtube.channels().list(mine=True, part='snippet').execute()
@@ -158,7 +199,7 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=100, published_after=None):
+    def retrieve_comments(self, video_id, comment_num=50, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T') + 'Z'
         
@@ -229,15 +270,25 @@ class YoutubeAPI:
         user.last_sync = now_synchronized
         user.save()
 
-    def create_account(self):
+    def create_account(self, oauth=True, handle=None):
+        """
+            Create a new account for the user.
+            If oauth is True, retrieve account information using OAuth.
+            If oauth is False, retrieve account information using the handle.
+        """
 
-        account_info = self.retrieve_account()
-
+        if oauth:
+            account_info = self.retrieve_account()
+        else:
+            account_info = self.retrieve_account_with_handle(handle)
+            self.credentials = utils.populate_fake_credentials(account_info['channel']['id'])
+        logger.info('Account info: %s', account_info)
         user, created = User.objects.update_or_create(
             username=account_info['username'],
             defaults={
                 'oauth_credentials': self.credentials,
-                'avatar': account_info['avatar']  # Make sure 'avatar' is in account_info if needed
+                'avatar': account_info['avatar'],  # Make sure 'avatar' is in account_info if needed
+                'moderation_access': oauth,
             }
         )
 
@@ -248,12 +299,17 @@ class YoutubeAPI:
                 'name': account_info['channel']['name'],
             }
         )
-
-        utils.populate_filters(channel)
+        if created:
+            # only when the channel is newly created, we need to populate the filters
+            utils.populate_filters(channel)
         return user, channel
 
     def delete_comment(self, comment_id):
         # https://developers.google.com/youtube/v3/docs/comments/delete#try-it
+        if self.private_youtube is None:
+            logger.info(f'No credentials provided, cannot delete comment {comment_id}')
+            return
+        
         if settings.DJANGO_ENV == 'production':
             request = self.private_youtube.comments().delete(
                 id=comment_id

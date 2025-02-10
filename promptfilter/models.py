@@ -13,6 +13,8 @@ class User(models.Model):
     username = models.CharField(max_length=255, unique=True, primary_key=True)
     avatar = models.URLField(blank=True, null=True)
     oauth_credentials = models.JSONField(blank=True, null=True)
+    # used to determine whether our tool has access to moderation features
+    moderation_access = models.BooleanField(default=False)
     second_last_sync = models.DateTimeField(blank=True, null=True)
     last_sync = models.DateTimeField(blank=True, null=True)
 

@@ -3,9 +3,10 @@ import copy
 import logging
 from .basic_filter import BasicPromptFilter
 from . import utils as utils
-
+import os
 
 logger = logging.getLogger(__name__)
+RANDOM_PREDICTION = os.getenv('RANDOM_PREDICTION', 'False') == 'True'
 
 class BackendPromptFilter:
 
@@ -141,10 +142,9 @@ class BackendPromptFilter:
     
     def predict_comments_consistently(self, comments, **kwargs):
         prompt_str = self.stringify_filter(structured=False)
-        debug = False
-        logger.info(f'We are running LLMs with debug mode: {debug}.')
-        prompt_filter = BasicPromptFilter(prompt_str, debug=debug)
-        return prompt_filter.predict_comments_consistently(comments, rounds=3)
+        logger.info(f'We are running LLMs with debug mode: {RANDOM_PREDICTION}.')
+        prompt_filter = BasicPromptFilter(prompt_str, debug=RANDOM_PREDICTION)
+        return prompt_filter.predict_comments_consistently(comments, rounds=5)
 
     def serialize(self):
         return {
