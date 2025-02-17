@@ -7,7 +7,7 @@ from .youtube import YoutubeAPI
 
 logger = logging.getLogger(__name__)
 
-def update_predictions(filter, mode, now_synchronized=None):
+def update_predictions(filter, mode, now_synchronized=None, start_date=None):
     """When we call this function, we want to also execute the corresponding action for each True prediction.
 
         @mode: we have various modes to make sure we do not waste too much computational resources
@@ -17,14 +17,16 @@ def update_predictions(filter, mode, now_synchronized=None):
             'iteration': when the user wants to iterate on their filters.
     """
 
-    comments = filter.retrieve_update_comments(mode)
+    comments = filter.retrieve_update_comments(mode, start_date)
     if len(comments) == 0:
         return None
     logger.info(f'Filter {filter.name} has {len(comments)} comments at the mode {mode}.')
     
-    # TODO: wondering whether we should update the last_run at the mode of 'initialize' or 'iteration'
-    filter.last_run = datetime.now() if now_synchronized is None else now_synchronized
-    filter.save()
+    # We should not update the last_run time in the iteration mode
+    # TODO: think about whether we should update the last_run time in the initialize mode
+    if mode not in ['initialize', 'iteration']:
+        filter.last_run = datetime.now() if now_synchronized is None else now_synchronized
+        filter.save()
 
     comments = [comment.serialize() for comment in comments]
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
@@ -35,16 +37,26 @@ def update_predictions(filter, mode, now_synchronized=None):
     predictions = []
     for comment in comments_with_preds:
         # update the prediction in the database;
-        # we will empty the reflection because it might not be applicable for the new filter
-        # TODO: we might want to conditionally remove the reflection
+        existing_prediction = FilterPrediction.objects.filter(
+            filter=filter,
+            comment_id=comment['id']
+        ).first()
+        
+        update_defaults = {
+            'prediction': comment['prediction'],
+            'confidence': comment['confidence'],
+            'explanation': ''
+        }
+        
+        # if the prediction has changed, we will also empty the reflection; 
+        # otherwise, we expect the old reflection to be still applicable
+        if not existing_prediction or existing_prediction.prediction != comment['prediction']:
+            update_defaults['reflection'] = ''
+
         prediction, created = FilterPrediction.objects.update_or_create(
             filter=filter,
             comment_id=comment['id'],
-            defaults={
-                'prediction': comment['prediction'],
-                'confidence': comment['confidence'],
-                'reflection': ''
-            }
+            defaults=update_defaults
         )
         if mode not in ['initialize', 'iteration']:
             # to avoid back and forth actions in the iteration mode
@@ -52,19 +64,23 @@ def update_predictions(filter, mode, now_synchronized=None):
         predictions.append(prediction.serialize())
 
     # remove all old mistake clusters for this filter
+    # because we assume calculating the mistake clusters itself is less expensive
+    # compared to updating the reflection for each prediction
     MistakeCluster.objects.filter(filter=filter).delete()
     return predictions
 
 
-def update_actions(filter, mode):
+def update_actions(filter, start_date=None):
     youtube = YoutubeAPI(filter.channel.owner.oauth_credentials)
     predictions = FilterPrediction.objects.filter(
         filter=filter, prediction=True
     ).filter(
         Q(groundtruth=True) | Q(groundtruth__isnull=True)
     ).all()
-    if mode == 'new' and filter.last_run:
-        predictions = predictions.filter(comment__posted_at__gt=filter.last_run)
+    if start_date is not None:
+        predictions = predictions.filter(comment__posted_at__gt=start_date)
+    
+    logger.info(f'Filter {filter.name} has {len(predictions)} predictions to update actions.')
     for prediction in predictions:
         youtube.execute_action_on_prediction(prediction)
 

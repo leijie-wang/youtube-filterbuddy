@@ -24,9 +24,13 @@ class YoutubeAPI:
                 self.credentials = credentials
             else:
                 self.credentials = utils.credentials_to_dict(credentials)
-        
-            filtered_credentials = {k: v for k, v in self.credentials.items() if k != 'myChannelId'}
-            self.private_youtube = build('youtube', 'v3', credentials=Credentials(**filtered_credentials))
+
+            if self.credentials.get('token', 'FAKE_TOKEN') == 'FAKE_TOKEN':
+                # if the token is fake, we will not be able to use the private youtube API
+                self.private_youtube = None
+            else:
+                filtered_credentials = {k: v for k, v in self.credentials.items() if k != 'myChannelId'}
+                self.private_youtube = build('youtube', 'v3', credentials=Credentials(**filtered_credentials))
         else:
             self.credentials = {}
             self.private_youtube = None
@@ -98,7 +102,7 @@ class YoutubeAPI:
         video_details_item = video_details_response['items'][0]
         return video_details_item['statistics']['commentCount']
     
-    def retrieve_videos(self, channel_id, video_num=3, published_after=None):
+    def retrieve_videos(self, channel_id, video_num=5, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T').replace('+00:00', 'Z')
         
@@ -154,8 +158,8 @@ class YoutubeAPI:
                     replies.append(reply_comment)
                 # Handle pagination
                 reply_request = self.youtube.comments().list_next(reply_request, reply_response)
-        if len(replies) > 10:
-            logger.debug(f'Extracted {len(replies)} replies from the comment {parent_comment.id}')
+        # if len(replies) > 10:
+        #     logger.debug(f'Extracted {len(replies)} replies from the comment {parent_comment.id}')
 
     def __process_comment(self, comment_item, video_id, parent_comment=None):
         comment_snippet = comment_item
@@ -199,7 +203,7 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=50, published_after=None):
+    def retrieve_comments(self, video_id, comment_num=100, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T') + 'Z'
         
@@ -264,7 +268,7 @@ class YoutubeAPI:
         filters = PromptFilter.objects.filter(channel=channel).all()
         for filter in filters:
             logger.info(f'Updated predictions for the filter {filter.name}')
-            updates.update_predictions(filter, 'new', now_synchronized)
+            updates.update_predictions(filter, 'new', now_synchronized=now_synchronized)
         
         user.second_last_sync = user.last_sync
         user.last_sync = now_synchronized

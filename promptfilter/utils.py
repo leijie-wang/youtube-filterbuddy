@@ -110,7 +110,6 @@ def determine_time_cutoff(filter):
         compare_time = None
     return compare_time
 
-
 def retrieve_predictions(filter, whether_iterate):
     N = 200
     
@@ -142,7 +141,7 @@ def number_of_new_comments(filter):
         We want to count the number of new comments since the second last synchronization
     """
     compare_time = determine_time_cutoff(filter)
-    predicitions = FilterPrediction.objects.filter(record=filter, prediction=True)
+    predicitions = FilterPrediction.objects.filter(filter=filter, prediction=True)
     if compare_time is not None:
         predicitions = predicitions.filter(comment__posted_at__gt=compare_time)
     return predicitions.count()

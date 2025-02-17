@@ -1,0 +1,51 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Start All Services",
+            "dependsOn": ["Start Django", "Start Celery", "Start Celery Beat"],
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always"
+            }
+        },
+        {
+            "label": "Start Django",
+            "type": "shell",
+            "command": "source ../backend-venv/bin/activate && python manage.py runserver",
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "Start Celery",
+            "type": "shell",
+            "command": "source ../backend-venv/bin/activate && celery -A filterbuddy worker --loglevel=info --pool=threads",
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "Start Celery Beat",
+            "type": "shell",
+            "command": "source ../backend-venv/bin/activate && celery -A filterbuddy beat --loglevel=info",
+            "problemMatcher": [],
+            "group": "build",
+                "presentation": {
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated"
+            }
+        },
+    ]
+  }
+  

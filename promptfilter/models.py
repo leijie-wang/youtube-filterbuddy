@@ -106,6 +106,7 @@ class Comment(models.Model):
             'dislikes': self.dislikes,
             'status': self.status,
             'totalReplies': self.total_replies,
+            'link': f'https://www.youtube.com/watch?v={self.video.id}&t=1s&lc={self.id}',
         }
         if as_prediction:
             comment['prediction'] = None
@@ -274,13 +275,13 @@ class PromptFilter(models.Model):
         FilterPrediction.objects.filter(filter=self).delete()
         PromptFilter.objects.filter(id=self.id).delete()
 
-    def retrieve_update_comments(self, mode):
+    def retrieve_update_comments(self, mode, start_date=None):
         comments = Comment.objects.filter(video__channel=self.channel).order_by('posted_at')
         if mode == 'new' and self.last_run:
             # select comments that appear after the last run
             comments = list(comments.filter(posted_at__gt=self.last_run).order_by('posted_at'))
         elif mode == 'all':
-            comments = list(comments.all())
+            comments = list(comments.filter(posted_at__gt=self.last_run).order_by('posted_at'))
         elif mode == 'initialize':
             # we randomly sample 100 comments because users might still quickly iterate on the filter
             # and we want to avoid wasting too many API calls

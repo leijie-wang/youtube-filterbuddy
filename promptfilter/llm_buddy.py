@@ -429,6 +429,7 @@ class LLMBuddy:
         def generate_clusters(now_mistakes, eps, min_samples=2):
             now_embeddings = [item['embedding'] for item in now_mistakes]
             now_embeddings = np.array(now_embeddings)
+            # this ensures that the generated clusters contains at least 2 items
             dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
             labels = dbscan.fit_predict(now_embeddings)
 
@@ -476,7 +477,7 @@ class LLMBuddy:
             if dist < threshold:
                 clustered_mistakes[rubrics[min_idx]['rubric']].append(mistakes[i])
         
-        clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if mistakes }
+        clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if len(mistakes) > 1 }
             
         return clustered_mistakes
 

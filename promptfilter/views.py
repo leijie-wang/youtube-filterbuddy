@@ -111,9 +111,7 @@ def authorize_user(request):
     # for the test user
     request_data = json.loads(request.body)
 
-
     if verify_user(request):
-        logger.info("User has already been authorized.")
         channel_id = request.session['credentials']['myChannelId']
         channel = Channel.objects.filter(id=channel_id).first()
         user = channel.owner
@@ -123,14 +121,13 @@ def authorize_user(request):
                 'username': user.username,
                 'channel': channel.name,
                 'isAuthorized': True,
-                'redirectUrl': f'{FRONTEND_URL}/overview'
+                'redirectUrl': f'{FRONTEND_URL}/overview',
             }, safe=False
         )
 
     # for authentication without oauth
     if request_data.get('whether_test', False):
         handle = request_data.get('handle', None) or 'TheYoungTurks'
-        logger.info(f"handle: {handle}")
         if handle is not None:
             user = User.objects.filter(username=handle).first()
             if not user:
@@ -140,7 +137,7 @@ def authorize_user(request):
             else:
                 channel = Channel.objects.filter(owner=user).first()
             request.session['credentials'] = user.oauth_credentials
-            logger.info(f"user: {user}; channel: {channel}; credentials: {request.session['credentials']}")
+            logger.info(f"user: {user}; channel: {channel} authorized")
             return JsonResponse(
                 {
                     'username': user.username,
@@ -179,7 +176,7 @@ def oauth2_callback(request):
     user, channel = YoutubeAPI(credentials).create_account()
     request.session['credentials']['myChannelId'] = channel.id
     return HttpResponseRedirect(
-        f'https://youtube.filterbuddypro.com/overview?owner={user.username}&channel={channel.name}'
+        f'https://youtube.filterbuddypro.com/overview?owner={user.username}&channel={channel.name}&isNewAccount'
     )
 
 @user_verification_required
@@ -437,7 +434,7 @@ def improve_prompt(request):
             cluster_instances[0].summary = summary
             cluster_instances[0].save()
     else:
-        minimum_mistake_count = 10
+        minimum_mistake_count = 5
         mistake_instances = FilterPrediction.objects.filter(
                 groundtruth__isnull=False, filter=filter
             ).exclude(
@@ -453,7 +450,7 @@ def improve_prompt(request):
                 }, safe=False
             )
         
-        task = tasks.generate_clusters_task.delay(filter.id, [mistake.serialize() for mistake in mistake_instances])
+        task = tasks.generate_clusters_task.delay(filter.id)
         task_id = task.id
         
     
@@ -470,6 +467,12 @@ def summarize_cluster(request):
     request_data = json.loads(request.body)
     cluster = request_data.get('cluster')
     filter = request_data.get('filter')
+
+    old_suggestion_id = request_data.get('old_suggestion')
+    if old_suggestion_id:
+        # TODO: do we want to simply mark it as inactive or delete it?
+        # the only benefit of marking it as inactive is that we can make sure that future suggestions are not repeated
+        MistakeCluster.objects.filter(id=old_suggestion_id).delete()
 
     filter = PromptFilter.objects.filter(id=filter['id']).first()
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
@@ -511,9 +514,6 @@ def clarify_prompt(request):
 @user_verification_required
 def refine_prompt(request):
     request_data = json.loads(request.body)
-    filter = request_data.get('filter')
-
-    filter = PromptFilter.objects.filter(id=filter['id']).first()
     cluster = request_data.get('cluster')
     
 
@@ -525,14 +525,13 @@ def refine_prompt(request):
             }, safe=False
         )
     
-
-    backend_filter = BackendPromptFilter.create_backend_filter(filter)
-    refined_filter = buddy.refine_prompt(backend_filter, cluster)
-    # TODO: while the frontend needs more structured information for better UI,
-    # we will simply use the simplest description for now.
+    filter = request_data.get('filter')
+    task = tasks.refine_prompt_task.delay(filter['id'], cluster)
+    task_id = task.id
     return JsonResponse(
         {
-            'refinedFilter': refined_filter.serialize()
+            'message': f"We have started to refine the prompt for the filter {filter['name']}.",
+            'taskId': task_id
         }, safe=False
     )
     
@@ -542,6 +541,7 @@ def save_prompt(request):
     request_data = json.loads(request.body)
     new_filter = request_data.get('filter')
     mode = request_data.get('mode')
+    start_date = request_data.get('start_date')
 
     if 'id' in new_filter:
         filter = PromptFilter.objects.filter(id=new_filter['id']).first()
@@ -550,7 +550,7 @@ def save_prompt(request):
         channel = Channel.objects.filter(owner__username=new_filter['owner']).first()
         filter = PromptFilter(name=new_filter['name'], description=new_filter['description'], channel=channel)
         filter.save()
-    logger.info(f"filter that is saved: {filter}")
+    logger.info(f"Saving a filter: {filter}")
 
     if filter.last_run is None or filter.whether_changed(new_filter):
         # if the filter has not been run before or the description has been updated
@@ -559,7 +559,7 @@ def save_prompt(request):
         filter.update_filter(new_filter)
         filter.save()
         
-        task = tasks.update_predictions_task.delay(filter.id, mode)
+        task = tasks.update_predictions_task.delay(filter.id, mode, start_date)
         task_id = task.id
 
         return JsonResponse(
@@ -573,26 +573,22 @@ def save_prompt(request):
         logger.info(f"Updating the action of the filter {filter.name}")
         filter.action = new_filter['action']
         filter.save()
-        
+
         # We do not revert the old actions but simply impose the new action
-        updates.update_actions(filter, mode)
-        
-        comments = utils.retrieve_predictions(filter, False)
+        updates.update_actions(filter, start_date)
         return JsonResponse(
             {
                 'message': f"The action of the filter {filter.name} has been successfully updated.",
                 'filter': filter.serialize(),
-                'predictions': comments,
                 'taskId': None
             }, safe=False
         )
     else:
-        comments = utils.retrieve_predictions(filter, False)
+        logger.info(f"Detected no changes in the filter {filter.name}")
         return JsonResponse(
             {
                 'message': f"The filter {filter.name} has not been updated as no changes were detected.",
                 'taskId': None,
-                'predictions': comments,
                 'filter': filter.serialize()
             }, safe=False
         )
