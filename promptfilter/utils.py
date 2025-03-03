@@ -5,8 +5,6 @@ from scipy.spatial.distance import cdist
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from datetime import timedelta
 from django.utils import timezone
-from django.db.models import Q, F, Case, When, Value, IntegerField
-
 from .models import User, Channel, PromptFilter, Comment, FilterPrediction
 
 
@@ -112,11 +110,11 @@ def determine_time_cutoff(filter):
 
 def retrieve_predictions(filter, whether_iterate):
     N = 200
-    
+    logger.info(f'filter {filter.name} is being retrieved with the mode {whether_iterate}.')
     if not whether_iterate:
         # if the mode is not iteration, we want to retrieve all the predictions
         predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
-        logger.info(f"predictions: {len(predictions)}")
+        logger.info(f"predictions when retrieving predictions: {len(predictions)}")
     else:
         # if the mode is iteration, we want to retrieve predictions that have groundtruths
         predictions = (
@@ -214,23 +212,26 @@ def eval_performance(now_comments, print_comments=False):
     # Extract ground truth and predictions
     y_true = [comment['groundtruth'] for comment in now_comments]
     y_pred = [comment['prediction'] for comment in now_comments]
-    
+    weights = [comment['weight'] for comment in now_comments]
+
     # Calculate metrics
-    accuracy = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred, average='binary')
-    recall = recall_score(y_true, y_pred, average='binary')
-    f1 = f1_score(y_true, y_pred, average='binary')
+    accuracy = accuracy_score(y_true, y_pred, sample_weight=weights)
+    precision = precision_score(y_true, y_pred, average='binary', sample_weight=weights)
+    recall = recall_score(y_true, y_pred, average='binary', sample_weight=weights)
+    f1 = f1_score(y_true, y_pred, average='binary', sample_weight=weights)  
     
     # Print results
-    print(f"Accuracy: {accuracy:.2f}")
-    print(f"Precision: {precision:.2f}")
-    print(f"Recall: {recall:.2f}")
-    print(f"F1 Score: {f1:.2f}")
+    if print_comments:
+        print(f"Accuracy: {accuracy:.2f}")
+        print(f"Precision: {precision:.2f}")
+        print(f"Recall: {recall:.2f}")
+        print(f"F1 Score: {f1:.2f}")
     # print out the number of mistakes 
     mistakes = [comment for comment in now_comments if comment['groundtruth'] != comment['prediction']]
     false_positives = [comment for comment in mistakes if comment['groundtruth'] == 0 and comment['prediction'] == 1]
     false_negatives = [comment for comment in mistakes if comment['groundtruth'] == 1 and comment['prediction'] == 0]
-    print(f"\nNumber of mistakes: {len(mistakes)}; False Positives: {len(false_positives)}; False Negatives: {len(false_negatives)}")
+    if print_comments:
+        print(f"\nNumber of mistakes: {len(mistakes)}; False Positives: {len(false_positives)}; False Negatives: {len(false_negatives)}")
 
     if print_comments:
         # print first false positives

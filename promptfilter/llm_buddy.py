@@ -33,12 +33,14 @@ class LLMBuddy:
     def initialize_prompt(self, name, description, example):
         system_prompt = """
             <tasks>
-                A content creator is writing down their content moderation preferences in a prompt but has difficulties clearly communicating their preferences. 
-                However, they could intuitively tell the groundtruth of a text (1 represents that the text should be caught by the prompt, and 0 represents that the text should not be caught).
-                Sometimes the content creator might also provide a draft prompt.
-                
+                A content creator is writing down their content moderation/curation preferences in a prompt but has difficulties clearly communicating their preferences.
+                To begin with, content creators might provide two kinds of inputs to help you understand their preferences:
+                    - they could intuitively tell the groundtruth of a text (1 represents that the text should be caught by the prompt, and 0 represents that the text should not be caught).
+                    - the content creator might also provide a draft prompt.
                 If the content creator has already provided a draft prompt, then you should simply refine this draft based on the examples.
                 Otherwise, you should write a prompt for them based on their labeled examples.
+
+                Note that content creators might want to catch negative comments, or they might want to catch positive comments.
             </tasks>
 
             <steps>
@@ -74,6 +76,23 @@ class LLMBuddy:
                     
                 </example>
                 <example>
+                    <Name>Constructive Feedback</Name>
+                    <Text></Text>
+                    <Groundtruth></Groundtruth>
+                    <Draft>Find comments that offer helpful suggestions for improvement while still being supportive.</Draft>
+
+                    <Reasoning>
+                        Without specific examples provided, I need to work directly from the draft prompt.
+                        The content creator wants to identify comments that provide constructive feedback in a supportive manner.
+                        This suggests they value comments that balance critique with encouragement - not just negative criticism, but helpful input delivered with positive intent.
+                        The draft prompt captures this intent but could be refined to be more specific about the balanced nature of these comments and to follow the required format.
+                    </Reasoning>
+                    <Prompt>
+                        Comments that balance specific suggestions for content improvement with genuine appreciation or encouragement.
+                    </Prompt>
+                </example>
+
+                <example>
                     <Name>Political Stereotypes</Name>
                     <Text>The liberal agenda is one of censorship, crime, and hate</Text>
                     <Groundtruth>1</Groundtruth>
@@ -105,6 +124,7 @@ class LLMBuddy:
                         Comments that contain direct threats of violence or harm toward others.
                     </Prompt>
                 </example>
+                
             </examples>
         """
         user_prompt = f"""
@@ -131,21 +151,28 @@ class LLMBuddy:
         negative_comments = []
         remaining_negative_comments = []
 
-        def sample_interesting_comments(now_predictions):
-            for pred in now_predictions:
+        predictions = FilterPrediction.objects.filter(filter_id=filter.id, groundtruth__isnull=True).all()
+        predictions = [pred.serialize() for pred in predictions]
+        total_predictions = len(predictions)
+
+        def sample_interesting_comments():
+            nonlocal predictions
+            for pred in predictions:
                 if pred['prediction'] == 1:
                     positive_comments.append(pred)
                 elif pred['prediction'] == 0 and pred['confidence'] < 1:
                     negative_comments.append(pred)
                 else:
                     remaining_negative_comments.append(pred)
+            predictions = []
         
         def produce_new_predictions(batch_size=50):
-            # we will first sample comments that do not predictions yet
-            new_comments = Comment.objects.exclude(predictions__filter_id=filter.id).all()
+            nonlocal total_predictions
+            # we will first sample comments that do not have predictions yet
+            new_comments = Comment.objects.filter(video__channel_id=filter.channel_id).exclude(predictions__filter_id=filter.id).all()
             new_comments = new_comments[:batch_size]
             new_comments = [comment.serialize() for comment in new_comments]
-            new_predictions = filter.predict_comments_consistently(new_comments, debug=True)
+            new_predictions = filter.predict_comments_consistently(new_comments)
             for pred in new_predictions:
                 FilterPrediction.objects.update_or_create(
                     filter_id=filter.id,
@@ -155,21 +182,23 @@ class LLMBuddy:
                         'confidence': pred['confidence'],
                     }
                 )
+            total_predictions += len(new_predictions)
             return new_predictions
 
-        predictions = FilterPrediction.objects.filter(filter_id=filter.id, groundtruth__isnull=True).all()
-        predictions = [pred.serialize() for pred in predictions]
-        # determine the maximum number of new comments we will explore
-        round = 0
-        while ((len(positive_comments) + len(negative_comments)) < 2 * N) and round < 2:
-            if not predictions:
-                predictions = produce_new_predictions()
-            sample_interesting_comments(predictions)
+        
+        
+        # we first sample comments in case we already have enough interesting comments
+        sample_interesting_comments()
+        # if there are not enough predictions, we will create new comments
+        while ((len(positive_comments) + len(negative_comments)) < 2 * N) and (total_predictions < 20 * N):
+            predictions = produce_new_predictions()
+            sample_interesting_comments()
+            
             
         # based on the number of positive and negative comments, we will sample interesting comments
         interesting_comments = []
+        logger.info(f'We have {len(positive_comments)} positive comments and {len(negative_comments)} negative comments to begin with')
         if len(positive_comments) + len(negative_comments) >= 2 * N:
-            logger.info(f'We have {len(positive_comments)} positive comments and {len(negative_comments)} negative comments')
             if len(positive_comments) < N:
                 interesting_comments.extend(positive_comments)
                 interesting_comments.extend(random.sample(negative_comments, 2 * N - len(positive_comments)))
@@ -183,13 +212,13 @@ class LLMBuddy:
             needed_num = 2 * N - len(interesting_comments)
             logger.info(f'We want to sample {needed_num} comments from the remaining negative comments')
             # sample comments from the remaining negative comments, in particular, we sample comments with closer distance to the filter
-            comment_embeddings = [
-                self.llm_client.text_embedding(comment['content']) for comment in remaining_negative_comments
-            ]
-            filter_embedding = self.llm_client.text_embedding(filter.stringify_filter())
-            distances = cdist(comment_embeddings, filter_embedding, metric='euclidean').flatten()
+            sampled_remaining_negative_comments = random.sample(remaining_negative_comments, min(30 * N, len(remaining_negative_comments)))
+            comment_embeddings = self.llm_client.list_text_embedding([comment['content'] for comment in sampled_remaining_negative_comments])
 
-            comments_with_distance = list(zip(remaining_negative_comments, distances))
+            filter_embedding = self.llm_client.text_embedding(filter.stringify_filter())
+            distances = cdist(comment_embeddings, [filter_embedding], metric='euclidean').flatten()
+
+            comments_with_distance = list(zip(sampled_remaining_negative_comments, distances))
             # Sort comments by ascending distance (closer first)
             comments_with_distance.sort(key=lambda x: x[1])
 
@@ -384,7 +413,7 @@ class LLMBuddy:
             user_prompt = user_prompt,
             type="text"
         )
-        logger.info(f'Reflect preference response: {response}\n')
+        logger.debug(f'Reflect preference response: {response}\n')
         reasons = self.llm_client.extract_xml(response, "Reasoning")
         return reasons
     
@@ -454,7 +483,7 @@ class LLMBuddy:
             new_clusters = list(clusters.values())
             cluster_sizes = [len(cluster) for cluster in new_clusters]
             cluster_sizes_str = ', '.join([str(size) for size in cluster_sizes])
-            logger.info(f'We have {len(new_clusters)} clusters with the size of {cluster_sizes_str} with eps={eps}')
+            logger.debug(f'We have {len(new_clusters)} clusters with the size of {cluster_sizes_str} with eps={eps}')
             cluster_candidates.extend(new_clusters)
             eps += 0.1
 
@@ -484,9 +513,9 @@ class LLMBuddy:
     def add_new_rubric(self, filter, mistakes, rubric_kind, candidate_num=2, round=2, prefilter=False):
         logger.info('*' * 100)
         logger.info(f'We are adding a new {rubric_kind} rubric with {len(mistakes)} mistakes')
-        for mistake in mistakes:
-            logger.info(f"\t{mistake['groundtruth']}\t{mistake['content']}\n\t{mistake['reflection']}\n")
-            logger.info('-' * 50)
+        # for mistake in mistakes:
+        #     logger.info(f"\t{mistake['groundtruth']}\t{mistake['content']}\n\t{mistake['reflection']}\n")
+        #     logger.info('-' * 50)
         system_prompt = f"""
             <Task>
                 A content creator is writing down their content moderation preference as a prompt.
@@ -543,7 +572,7 @@ class LLMBuddy:
                 user_prompt = user_prompt,
                 type="text"
             ) 
-            logger.info(f'Add new rubric response\n: {response}\n\n')
+            logger.debug(f'Add new rubric response\n: {response}\n\n')
             new_rubrics = self.llm_client.extract_xml(response, "Rubric")
             return new_rubrics
         
@@ -555,6 +584,7 @@ class LLMBuddy:
             new_rubrics = run(now_mistakes)
             for new_rubric in new_rubrics:
                 new_filter = copy.deepcopy(filter)
+                logger.info(f'[Prompt Candidate] Add a new {rubric_kind} rubric: {new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes)
                 new_filters.append(new_filter)
         
@@ -667,7 +697,7 @@ class LLMBuddy:
                 user_prompt = user_prompt,
                 type="text"
             ) 
-            logger.info(f'Edit rubric response\n: {response}\n\n')
+            # logger.info(f'Edit rubric response\n: {response}\n\n')
             new_rubrics = self.llm_client.extract_xml(response, "Rubric")
             return new_rubrics
         
@@ -676,8 +706,10 @@ class LLMBuddy:
             # we will try different batches for iteration.
             now_mistakes = random.sample(mistakes, min(10, len(mistakes)))
             new_rubrics = run(now_mistakes)
+            logger.info(f'[Prompt Candidates] Edit the {rubric_kind} rubric from: {new_rubrics}')
             for new_rubric in new_rubrics:
                 new_filter = copy.deepcopy(filter)
+                logger.info(f'\t--{new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes, old_rubric=rubric)
                 new_filters.append(new_filter)
         
@@ -831,8 +863,7 @@ class LLMBuddy:
                         Write down a sentence with less than 40 words that explains to the content creator how this {rubric_kind} rubric will be further edited to incorporate these nuances in misclassified comments.
                         
                         - Your explanation should be in the following format:
-                            'Your filter currently [descriptions of the relevant aspect of the filter].
-                            After examining your annotations, do you want to [summary of the edits we want to make]?'
+                            'After examining your annotations, do you want to [summary of the edits we want to make]?'
                             Your should try to draw a clear contrast betweeen what the current prompt fails and what you want to change it to.
                         - Keep the language of your explanation concise and specific; avoid being verbose, ambiguous, or overly general.
                         - We are doing this for content moderation to protect users' online experiences, so please do not refrain from using sensitive words or phrases in your rubric, which are necessary to accurately capture the user's preferences.
@@ -848,7 +879,7 @@ class LLMBuddy:
                         </ProblemComments>
 
                         <Explanation>
-                            Your filter currently only mentions killing others. Upon examining your annotations, do you also want to catch comments about committing suicide?
+                            Upon examining your annotations, do you also want to catch comments about committing suicide?
                         </Explanation>
                     </Example>
                     <Example>
@@ -859,7 +890,6 @@ class LLMBuddy:
                         </ProblemComments>
 
                         <Explanation>
-                            Your filter currently only lists derogatory terms like "scumbag" and "douchebag" as examples, 
                             After examining your annotations, do you want to further catch "bastard" while excluding milder terms like "fool"?
                         </Explanation>
                     <Example>
@@ -905,8 +935,7 @@ class LLMBuddy:
                         Write down a sentence with less than 40 words that explains to the content creator how a new {rubric_kind} rubric will be further added to incorporate these nuances in misclassified comments.
                         
                         - Your explanation should be in the following format:
-                            'Your filter currently [descriptions of the relevant aspect of the filter].
-                            After examining your annotations, do you want to [summary of the new rubric we want to add]?'
+                            'After examining your annotations, do you want to [summary of the new rubric we want to add]?'
                             Your should try to draw a clear contrast betweeen what the current prompt fails and what you want to change it to.
                         - Keep the language of your explanation concise and specific; avoid being verbose, ambiguous, or overly general.
                         - We are doing this for content moderation to protect users' online experiences, so please do not refrain from using sensitive words or phrases in your rubric, which are necessary to accurately capture the user's preferences.
@@ -958,13 +987,20 @@ class LLMBuddy:
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to generate prompt candidates for the filter {filter.name}')
 
+
         start_time = time.time()
         # TODO: determine how should we build the training dataset and how to highlight the mistakes.
-        # best_filters = self.select_best_filters(
-        #     new_filters, filter.training_examples, topN=1
-        # )
+        
+        # we increase the weight of the focused comments
+        focused_comment_ids = [comment['id'] for comment in refine_cluster['cluster']]
+        for training_example in filter.training_examples:
+            weight = 1
+            if training_example['id'] in focused_comment_ids:
+                weight = 5
+            training_example['weight'] = weight
+
         best_filters = self.select_best_filters(
-            new_filters, refine_cluster['cluster'], topN=1
+            new_filters, filter.training_examples, topN=1
         )
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to select the best filter among {len(new_filters)} candidates')
@@ -1041,14 +1077,13 @@ class LLMBuddy:
             logger.info(f"Running overall strategy with {len(filters)} filters to select the top {topN}.")
             performances = []
             for new_filter in filters:
-                print(f'Evaluate the filter:\n {new_filter.stringify_filter(structured=False)}\n')
                 comments_copy = [comment.copy() for comment in comments]
                 comments_copy = new_filter.predict_comments_consistently(comments_copy)
                 performance = utils.eval_performance(comments_copy, print_comments=False)
                 performances.append(performance['f1'])
                 if performance['accuracy'] > 0.9:
                     return [new_filter]
-                print('Performance:', performance)
+                logger.info('Performance:', performance)
             # return the top N best filters
             best_indices = np.argsort(performances)[::-1][:topN]
             best_filters = [filters[i] for i in best_indices]

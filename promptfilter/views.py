@@ -4,11 +4,13 @@ import logging
 from math import log
 import os
 import random
-from django.db.models import F, Q
+from django.db.models import F
+from django.db.utils import OperationalError
 from django.http import JsonResponse, HttpResponseRedirect
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+
 from functools import wraps
 import google_auth_oauthlib.flow
 
@@ -106,11 +108,29 @@ def switch_mode(request):
         
         # in this case, the moderation access will be updated when creating the account.
         return __authorize_oauth()
-    
+
+def whether_account_exists(request):
+    request_data = json.loads(request.body)
+    handle = request_data.get('handle', None)
+    if handle is not None:
+        user = User.objects.filter(username=handle).first()
+        return JsonResponse(
+            {
+                'exists': user is not None,
+            }, safe=False
+        )
+    else:
+        return JsonResponse(
+            {
+                'exists': False,
+            }, safe=False
+        )
+            
 def authorize_user(request):
     # for the test user
     request_data = json.loads(request.body)
 
+    # if the user has already authorized
     if verify_user(request):
         channel_id = request.session['credentials']['myChannelId']
         channel = Channel.objects.filter(id=channel_id).first()
@@ -125,29 +145,50 @@ def authorize_user(request):
             }, safe=False
         )
 
-    # for authentication without oauth
-    if request_data.get('whether_test', False):
-        handle = request_data.get('handle', None) or 'TheYoungTurks'
-        if handle is not None:
-            user = User.objects.filter(username=handle).first()
-            if not user:
-                # create a test user
-                youtube = YoutubeAPI({})
-                user, channel = youtube.create_account(oauth=False, handle=handle)
-            else:
-                channel = Channel.objects.filter(owner=user).first()
-            request.session['credentials'] = user.oauth_credentials
-            logger.info(f"user: {user}; channel: {channel} authorized")
-            return JsonResponse(
-                {
-                    'username': user.username,
-                    'channel': channel.name,
-                    'isAuthorized': True,
-                    'redirectUrl': f'{FRONTEND_URL}/overview'
-                }, safe=False
-            )
+    """
+        whether test:
+            - if true, then users want to authenticate via YouTube API
+            - if false, then we will fake the authentication
+            - if null, then we will use the default behavior from previous settings as the user has already logged in before.
+    """
+    whether_test = request_data.get('whether_test', False)
+    handle = request_data.get('handle', None)
     
-    if IS_LOCAL and not request_data.get('whether_test', False):
+    if whether_test is not True and handle is None:
+        logger.warning("We cannot authorize the user locally without a handle.")
+        return JsonResponse(
+            {
+                'message': "We cannot authorize the user locally without a handle.",
+            }, safe=False
+        )
+    
+    if whether_test is None:
+        user = User.objects.filter(username=handle).first()
+        if user is not None:
+            # if the user has already authorized, then we will use the previous settings
+            whether_test = not user.moderation_access
+    logger.info(f'We try to authorize the user {handle} with the test mode {whether_test}.')
+    # for authentication without oauth
+    if whether_test is True:
+        user = User.objects.filter(username=handle).first()
+        if not user:
+            # create a test user
+            youtube = YoutubeAPI({})
+            user, channel = youtube.create_account(oauth=False, handle=handle)
+        else:
+            channel = Channel.objects.filter(owner=user).first()
+        request.session['credentials'] = user.oauth_credentials
+        logger.info(f"user: {user}; channel: {channel} authorized")
+        return JsonResponse(
+            {
+                'username': user.username,
+                'channel': channel.name,
+                'isAuthorized': True,
+                'redirectUrl': f'{FRONTEND_URL}/overview'
+            }, safe=False
+        )
+    
+    if IS_LOCAL and whether_test is False:
         # if it is local, then we only support logging in without oauth
         logger.warning("We cannot authorize the user in a local environment.")
         return JsonResponse({'redirectUrl': '', 'isAuthorized': False})
@@ -329,12 +370,19 @@ def poll_tasks(request):
     task_id = request_data.get('task_id')
     task_result = AsyncResult(task_id)
     if task_result.ready():
-        results = task_result.get()
-        return JsonResponse({
-            "status": 'completed',
-            "message": f"Task {task_id} is completed",
-            "result": results
-        })
+        try:
+            results = task_result.get()
+            return JsonResponse({
+                "status": 'completed',
+                "message": f"Task {task_id} is completed",
+                "result": results
+            })
+        except OperationalError as e:
+            logger.error(f"OperationalError: {e}")
+            return JsonResponse({
+                "status": 'pending',
+                "message": f"Task {task_id} is still pending but an error occurred: {e}",
+            }) 
     else:
         return JsonResponse({
             "status": 'pending',
@@ -362,24 +410,22 @@ def initialize_prompt(request):
 def explore_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
+    needed_num = request_data.get('needed_num', 10)
     logger.info('filter: {filter}')
     filter = PromptFilter.objects.filter(id=filter['id']).first()
     if filter is None:
         return JsonResponse(
             {
-                'message': f"The filter does not exist."
+                'message': f"The filter does not exist.",
+                'taskId': None
             }, safe=False
         )
 
-    buddy = LLMBuddy()
-    # sample a balanced set of positive and negative comments
-    backend_filter = BackendPromptFilter.create_backend_filter(filter)
-    interesting_comments = buddy.select_interesting_comments(backend_filter)
-    # randomize the order of the comments
-    interesting_comments = random.sample(interesting_comments, len(interesting_comments))
+    task = tasks.select_interesting_comments_task.delay(filter.id, needed_num)
+    task_id = task.id
     return JsonResponse(
         {   
-            'comments': interesting_comments
+            'taskId': task_id
         }, safe=False
     )
 
@@ -550,9 +596,9 @@ def save_prompt(request):
         channel = Channel.objects.filter(owner__username=new_filter['owner']).first()
         filter = PromptFilter(name=new_filter['name'], description=new_filter['description'], channel=channel)
         filter.save()
-    logger.info(f"Saving a filter: {filter}")
+    logger.info(f"Saving a filter: {filter.serialize(view=True)}")
 
-    if filter.last_run is None or filter.whether_changed(new_filter):
+    if filter.last_run is None or filter.whether_changed(new_filter) or mode == 'all':
         # if the filter has not been run before or the description has been updated
         logger.info(f"Detected changes in the filter {filter.name}")
 
@@ -561,7 +607,6 @@ def save_prompt(request):
         
         task = tasks.update_predictions_task.delay(filter.id, mode, start_date)
         task_id = task.id
-
         return JsonResponse(
             {
                 'message': f"The description and the predictions of the filter {filter.name} has been successfully updated.",

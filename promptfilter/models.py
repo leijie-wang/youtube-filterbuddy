@@ -159,25 +159,29 @@ class PromptFilter(models.Model):
     def __str__(self):
         return f'{self.name} ({self.channel.name})'
     
-    def serialize(self):
+    def serialize(self, view=False):
         positive_rubrics = self.rubrics.filter(is_positive=True)
         negative_rubrics = self.rubrics.filter(is_positive=False)
         groundtruths = self.matches.filter(groundtruth__isnull=False)
 
-        return {
+        serialized_filter = {
             'id': self.id,
             'name': self.name,
             'description': self.description,
             'positives': [rubric.serialize() for rubric in positive_rubrics],
             'negatives': [rubric.serialize() for rubric in negative_rubrics],
-            'examples': [groundtruth.serialize() for groundtruth in groundtruths],
-            'fewShotExamples': [example.serialize() for example in self.few_shot_examples.all()],
-            'action': self.action,
-            'channel': self.channel.name,
-            'replyMessage': self.reply_message,
-
+            'lastRun': self.last_run,
         }
-    
+        if not view:
+            serialized_filter['examples'] = [groundtruth.serialize() for groundtruth in groundtruths]
+            serialized_filter['fewShotExamples'] = [example.serialize() for example in self.few_shot_examples.all()]
+            serialized_filter['action'] = self.action
+            serialized_filter['channel'] = self.channel.name
+            serialized_filter['channelId'] = self.channel.id
+            serialized_filter['replyMessage'] = self.reply_message
+        
+        return serialized_filter
+
     def whether_changed(self, new_filter):
         # Check direct fields first
         if self.description != new_filter.get('description', ''):
@@ -281,7 +285,10 @@ class PromptFilter(models.Model):
             # select comments that appear after the last run
             comments = list(comments.filter(posted_at__gt=self.last_run).order_by('posted_at'))
         elif mode == 'all':
-            comments = list(comments.filter(posted_at__gt=self.last_run).order_by('posted_at'))
+            if start_date:
+                comments = list(comments.filter(posted_at__gt=start_date).order_by('posted_at'))
+            else:
+                comments = list(comments.order_by('posted_at'))
         elif mode == 'initialize':
             # we randomly sample 100 comments because users might still quickly iterate on the filter
             # and we want to avoid wasting too many API calls

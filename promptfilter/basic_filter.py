@@ -112,7 +112,7 @@ class BasicPromptFilter:
 
         predictions = []
         threads = []
-        max_threads = 10
+        max_threads = 20
         if not self.debug:
             for index in range(0, len(dataset_list), self.BATCH_SIZE):
                 batch = dataset_list[index: index + self.BATCH_SIZE]
@@ -349,7 +349,7 @@ class BasicPromptFilter:
         """
         
         predictions_across_rounds = defaultdict(list)
-        logger.info(f'Predicting comments using majority votes: {rounds} rounds x batch size {batch_size} on {len(comments)} comments.')
+        logger.info(f'\nPredicting comments using majority votes with debug modes {self.debug}: {rounds} rounds x batch size {batch_size} on {len(comments)} comments')
         for _ in range(rounds):
             if randomized:
                 now_comments = random.sample(comments, len(comments))

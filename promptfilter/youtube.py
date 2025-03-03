@@ -103,30 +103,21 @@ class YoutubeAPI:
         return video_details_item['statistics']['commentCount']
     
     def retrieve_videos(self, channel_id, video_num=5, published_after=None):
-        if published_after:
-            published_after = published_after.isoformat('T').replace('+00:00', 'Z')
-        
-        request = self.youtube.search().list(
-            part='snippet',
-            channelId=channel_id,
-            type='video',
-            order='date',
-            publishedAfter=published_after,
-        )
-        response = request.execute()
-        logger.info(f'There are {len(response["items"])} videos in the channel')
-        videos = []
-        for item in response['items']:
-            if len(videos) >= video_num:
-                break
-            video_id = item['id']['videoId']
+        """
+            Generator function that paginates over YouTube Search results,
+            yielding one Video object at a time.
+        """
+        def _process_video(video_item):
+            video_id = video_item['id']['videoId']
+            # skip videos that have no comments
             if self.retrieve_video_statistics(video_id) == 0:
                 logger.info(f'Video {video_id} has no comments')
-                continue
-            video_title = item['snippet']['title']
-            video_description = item['snippet']['description']
-            video_image = item['snippet']['thumbnails']['default']['url']
-            video_published = item['snippet']['publishTime']
+                return None
+
+            video_title = video_item['snippet']['title']
+            video_description = video_item['snippet']['description']
+            video_image = video_item['snippet']['thumbnails']['default']['url']
+            video_published = video_item['snippet']['publishTime']
             video_link = f'https://www.youtube.com/watch?v={video_id}'
             video, created = Video.objects.update_or_create(
                 id=video_id,
@@ -139,8 +130,50 @@ class YoutubeAPI:
                     'video_link': video_link
                 }
             )
-            videos.append(video)
-        return videos
+            return video
+
+
+        if published_after:
+            published_after = published_after.isoformat('T').replace('+00:00', 'Z')
+        
+        page_token = None
+        total_fetched = 0
+
+        while True:
+            # the results are sorted in reverse chronological order
+            request = self.youtube.search().list(
+                part='snippet',
+                channelId=channel_id,
+                type='video',
+                order='date',
+                publishedAfter=published_after,
+                pageToken=page_token,
+            )
+            response = request.execute()
+            items = response.get('items', [])
+            if not items:
+                logger.info(f'No items found for channel {channel_id}')
+                break
+
+            for item in response['items']:
+                if video_num is not None and total_fetched >= video_num:
+                    break
+                
+                video = _process_video(item)
+                if video is None:
+                    # skip videos that have no comments
+                    continue
+                
+                total_fetched += 1
+                yield video
+
+            # If we've met the limit or there's no next page, exit.
+            if (video_num is not None and total_fetched >= video_num) or 'nextPageToken' not in response:
+                break
+
+            # Otherwise, move to the next page
+            page_token = response['nextPageToken']
+
 
     def __retrieve_replies(self, parent_comment):
         replies = []
@@ -203,7 +236,7 @@ class YoutubeAPI:
         self.__retrieve_replies(comment)
         return comment
 
-    def retrieve_comments(self, video_id, comment_num=100, published_after=None):
+    def retrieve_comments(self, video_id, comment_num=500, published_after=None):
         if published_after:
             published_after = published_after.isoformat('T') + 'Z'
         
@@ -246,25 +279,51 @@ class YoutubeAPI:
                 comments.extend(children_comments)
         return comments
         
-    def synchronize(self, user, restart=False):
+    def synchronize(self, user, restart=False, max_new_comments=500):
+        """
+            Synchronize the user's YouTube channel with the database.
+            If restart is True, delete all existing videos and comments.
+            If max_new_comments is set, stop synchronizing when the number of new comments exceeds this limit.
+        """
+
+        
         now_synchronized = datetime.datetime.now()
         channel = user.channel
-        videos = Video.objects.filter(channel=channel).all()
+
+        existing_videos = Video.objects.filter(channel=channel).all()
         # delete all existing videos and comments
         if restart:
-            videos.delete()
-
-        new_videos = self.retrieve_videos(channel.id, published_after=user.last_sync)
-        logger.info(f'Found {len(new_videos)} new videos for the channel {user.username}')
-        videos = Video.objects.filter(channel=channel).all()
-
-        total_new_comments = 0
-        for video in videos:
-            new_comments = self.retrieve_comments(video.id, published_after=user.last_sync)
-            logger.info(f'Extracted {len(new_comments)} new comments from the video {video.title}')
-            total_new_comments += len(new_comments)
-        logger.info(f'Found {total_new_comments} new comments for the channel {user.username}')
+            existing_videos.delete()
+            existing_videos = []
+            logger.info(f'Deleted all existing videos for the channel {user.username}')
         
+        
+        total_new_comments = 0
+        for video in existing_videos:
+            # in case this video has too many comments, we will only retrive new comments after the last sync
+            # this is helpful to avoid fetch all comments for a video that has been synchronized before
+            # because of running multiple times
+            new_comments = self.retrieve_comments(video.id, published_after=user.last_sync)
+            logger.info(f'Fetched {len(new_comments)} new comments from existing video {video.title}')
+            total_new_comments += len(new_comments)
+            
+
+        new_videos_count = 0
+        for new_video in self.retrieve_videos(channel.id, video_num=None, published_after=user.last_sync):
+            new_videos_count += 1
+            comment_num = max(100, max_new_comments - total_new_comments)
+            new_comments = self.retrieve_comments(new_video.id, comment_num=comment_num, published_after=user.last_sync)
+            logger.info(f'Fetched {len(new_comments)} new comments from new video {new_video.title}')
+            total_new_comments += len(new_comments)
+            # if the user has just created the account, we will only fetch at most max_new_comments new comments
+            # but if the user has been using the system for a while, we should not limit the number of new comments
+            if user.last_sync is None and total_new_comments > max_new_comments:
+                logger.info(f'Stopped synchronizing after {max_new_comments} new comments')
+                break
+
+        logger.info(f'Found {new_videos_count} new videos for {user.username} after {user.last_sync}')
+        logger.info(f'Total of {total_new_comments} new comments for {user.username}')
+
         filters = PromptFilter.objects.filter(channel=channel).all()
         for filter in filters:
             logger.info(f'Updated predictions for the filter {filter.name}')
@@ -303,9 +362,9 @@ class YoutubeAPI:
                 'name': account_info['channel']['name'],
             }
         )
-        if created:
-            # only when the channel is newly created, we need to populate the filters
-            utils.populate_filters(channel)
+        # if created:
+        #     # only when the channel is newly created, we need to populate the filters
+        #     utils.populate_filters(channel)
         return user, channel
 
     def delete_comment(self, comment_id):

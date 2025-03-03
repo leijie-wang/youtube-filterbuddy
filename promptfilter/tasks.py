@@ -1,5 +1,7 @@
 from venv import logger
 from celery import shared_task
+import math
+import random
 from django.db.models import F
 from .models import PromptFilter, User, MistakeCluster, FilterPrediction
 from .updates import update_predictions
@@ -12,7 +14,7 @@ def update_predictions_task(filter_id, mode, start_date):
     logger.info(f"Updating predictions for filter {filter_id} with mode {mode}")
     filter = PromptFilter.objects.get(id=filter_id)
     predictions = update_predictions(filter, mode, start_date=start_date)
-    logger.info(f"Predictions for filter {filter_id} have been updated.")
+    logger.info(f"Predictions for filter {filter.name} have been updated.")
     return { }
 
 @shared_task
@@ -36,7 +38,7 @@ def generate_clusters_task(filter_id):
         groundtruth=F('prediction')
     )
     mistakes = [mistake.serialize() for mistake in mistake_instances]
-    logger.info(f"Generating clusters for filter {filter_id} with {len(mistakes)} mistakes.")
+    logger.info(f"Generating clusters for filter {filter.name} with {len(mistakes)} mistakes.")
     buddy = LLMBuddy()
     reflections = buddy.reflect_on_mistakes_parellel(backend_filter, mistakes)
 
@@ -71,6 +73,19 @@ def generate_clusters_task(filter_id):
     
     logger.info(f"Clusters for filter {filter.name} on {len(mistakes)} mistakes have been completed with {len(clusters)} clusters.")
     return { 'clusters': cluster_instances }
+
+@shared_task
+def select_interesting_comments_task(filter_id, needed_num):
+    buddy = LLMBuddy()
+    # sample a balanced set of positive and negative comments
+    filter = PromptFilter.objects.filter(id=filter_id).first()
+    logger.info(f"Selecting interesting comments for filter {filter.name}")
+    backend_filter = BackendPromptFilter.create_backend_filter(filter)
+    interesting_comments = buddy.select_interesting_comments(backend_filter, N = math.ceil(needed_num / 2))
+    # randomize the order of the comments
+    interesting_comments = random.sample(interesting_comments, len(interesting_comments))
+    logger.info(f"Selected {len(interesting_comments)} interesting comments for filter {filter.name}")
+    return { 'interestingComments': interesting_comments }
 
 @shared_task
 def synchronize_youtube_task(username):
