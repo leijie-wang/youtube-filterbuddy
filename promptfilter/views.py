@@ -480,7 +480,7 @@ def improve_prompt(request):
             cluster_instances[0].summary = summary
             cluster_instances[0].save()
     else:
-        minimum_mistake_count = 5
+        minimum_mistake_count = 3
         mistake_instances = FilterPrediction.objects.filter(
                 groundtruth__isnull=False, filter=filter
             ).exclude(
