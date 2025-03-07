@@ -349,7 +349,37 @@ class BasicPromptFilter:
         """
         
         predictions_across_rounds = defaultdict(list)
+        results_lock = threading.Lock()  # Lock to safely update the shared predictions dictionary
+
         logger.info(f'\nPredicting comments using majority votes with debug modes {self.debug}: {rounds} rounds x batch size {batch_size} on {len(comments)} comments')
+        def run_prediction_round(round_index):
+            """Execute a single round of predictions in its own thread"""
+            if randomized:
+                now_comments = random.sample(comments, len(comments))
+            else:
+                now_comments = comments[:]
+            
+            # Get predictions for this round
+            round_predictions = self.predict_comments(now_comments, batch_size=batch_size)
+            
+            # Safely update the shared predictions dictionary
+            with results_lock:
+                for comment_id, pred in round_predictions.items():
+                    predictions_across_rounds[comment_id].append(pred['prediction'])
+            
+            logger.debug(f'Completed prediction round {round_index + 1}/{rounds}')
+
+        threads = []
+        for i in range(rounds):
+            thread = threading.Thread(target=run_prediction_round, args=(i,))
+            threads.append(thread)
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        """
         for _ in range(rounds):
             if randomized:
                 now_comments = random.sample(comments, len(comments))
@@ -358,6 +388,7 @@ class BasicPromptFilter:
             round_predictions = self.predict_comments(now_comments, batch_size=batch_size)
             for comment_id, pred in round_predictions.items():
                 predictions_across_rounds[comment_id].append(pred['prediction'])
+        """
         
         # calculate the majority prediction as the final prediction
         results = {}
@@ -382,7 +413,7 @@ class BasicPromptFilter:
         start_time = time.time()
         predictions = self.predict_with_majority_vote(comments, **kwargs)
         end_time = time.time()
-        logger.info(f'Predictions for the first round completed in {end_time - start_time:.2f} seconds.\n')
+        logger.info(f'Predictions for majority voting completed in {end_time - start_time:.2f} seconds.\n')
 
 
         for comment in comments:

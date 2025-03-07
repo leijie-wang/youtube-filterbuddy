@@ -555,7 +555,9 @@ class LLMBuddy:
             </NewRubrics>
         """
         
-        def run(now_mistakes):
+        new_filters = [[] for _ in range(round)]
+        def run(now_mistakes, round_index):
+            nonlocal new_filters
             problem_comments_str = ""
             for comment in now_mistakes:
                 problem_comments_str += f"""
@@ -574,19 +576,27 @@ class LLMBuddy:
             ) 
             logger.debug(f'Add new rubric response\n: {response}\n\n')
             new_rubrics = self.llm_client.extract_xml(response, "Rubric")
-            return new_rubrics
-        
-        new_filters = []
-        for _ in range(round):
-            # we will try different batches for iteration;
-            # if the number of mistakes is less than 20, we will also try to randomize the mistakes
-            now_mistakes = random.sample(mistakes, min(20, len(mistakes)))
-            new_rubrics = run(now_mistakes)
+
             for new_rubric in new_rubrics:
                 new_filter = copy.deepcopy(filter)
                 logger.info(f'[Prompt Candidate] Add a new {rubric_kind} rubric: {new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes)
-                new_filters.append(new_filter)
+                new_filters[round_index].append(new_filter)
+        
+        threads = []
+        for i in range(round):
+            # Sample a batch of mistakes
+            batch_mistakes = random.sample(mistakes, min(20, len(mistakes)))
+            
+            # Create and start a thread for this batch
+            thread = threading.Thread(target=run, args=(batch_mistakes, i))
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+        
+        new_filters = [filter for sublist in new_filters for filter in sublist]
         
         if prefilter:
             # evaluate the performances of the new filters on the mistakes dataset and select the top 3.
@@ -679,7 +689,9 @@ class LLMBuddy:
             </NewRubrics>
         """
         
-        def run(now_mistakes):
+        new_filters = [[] for _ in range(round)]
+        def run(now_mistakes, round_index):
+            nonlocal new_filters
             problem_comments_str = ""
             for comment in now_mistakes:
                 problem_comments_str += f"""
@@ -699,20 +711,29 @@ class LLMBuddy:
             ) 
             # logger.info(f'Edit rubric response\n: {response}\n\n')
             new_rubrics = self.llm_client.extract_xml(response, "Rubric")
-            return new_rubrics
-        
-        new_filters = []
-        for _ in range(round):
-            # we will try different batches for iteration.
-            now_mistakes = random.sample(mistakes, min(10, len(mistakes)))
-            new_rubrics = run(now_mistakes)
-            logger.info(f'[Prompt Candidates] Edit the {rubric_kind} rubric from: {new_rubrics}')
+            logger.info(f'[Prompt Candidates] Edit the {rubric_kind} rubric from: {rubric}')
             for new_rubric in new_rubrics:
                 new_filter = copy.deepcopy(filter)
                 logger.info(f'\t--{new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes, old_rubric=rubric)
-                new_filters.append(new_filter)
+                new_filters[round_index].append(new_filter)
+
         
+        threads = []
+        for i in range(round):
+            # Sample a batch of mistakes
+            batch_mistakes = random.sample(mistakes, min(10, len(mistakes)))
+            
+            # Create and start a thread for this batch
+            thread = threading.Thread(target=run, args=(batch_mistakes, i))
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+        
+        new_filters = [filter for sublist in new_filters for filter in sublist]
+
         if prefilter:
             # evaluate the performances of the new filters on the mistakes dataset and select the top 3.
             batch_size = min(20, len(mistakes) // 3)
@@ -996,7 +1017,7 @@ class LLMBuddy:
         for training_example in filter.training_examples:
             weight = 1
             if training_example['id'] in focused_comment_ids:
-                weight = 5
+                weight = 8
             training_example['weight'] = weight
 
         best_filters = self.select_best_filters(
@@ -1081,8 +1102,6 @@ class LLMBuddy:
                 comments_copy = new_filter.predict_comments_consistently(comments_copy)
                 performance = utils.eval_performance(comments_copy, print_comments=False)
                 performances.append(performance['f1'])
-                if performance['accuracy'] > 0.9:
-                    return [new_filter]
                 logger.info('Performance:', performance)
             # return the top N best filters
             best_indices = np.argsort(performances)[::-1][:topN]
