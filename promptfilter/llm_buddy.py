@@ -491,7 +491,7 @@ class LLMBuddy:
         cluster_candidates = sorted(cluster_candidates, key=lambda x: len(x), reverse=True)
         return cluster_candidates[:1]
 
-    def cluster_mistakes_for_rubrics(self, rubrics, mistakes, threshold=0.9):
+    def cluster_mistakes_for_rubrics(self, rubrics, mistakes, threshold=1, min_samples=3):
         """Identify mistakes that might help improve a particular rubric"""
         rubric_embeddings = [self.llm_client.text_embedding(rubric['rubric']) for rubric in rubrics]
         mistake_embeddings = [mistake['embedding'] for mistake in mistakes]
@@ -506,7 +506,7 @@ class LLMBuddy:
             if dist < threshold:
                 clustered_mistakes[rubrics[min_idx]['rubric']].append(mistakes[i])
         
-        clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if len(mistakes) > 1 }
+        clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if len(mistakes) >= min_samples }
             
         return clustered_mistakes
 
@@ -583,18 +583,23 @@ class LLMBuddy:
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes)
                 new_filters[round_index].append(new_filter)
         
-        threads = []
-        for i in range(round):
-            # Sample a batch of mistakes
-            batch_mistakes = random.sample(mistakes, min(20, len(mistakes)))
-            
-            # Create and start a thread for this batch
-            thread = threading.Thread(target=run, args=(batch_mistakes, i))
-            threads.append(thread)
-            thread.start()
+        
+        if len(mistakes) <= 20:
+            # if there are not enough mistakes, we will simply run the task in a single thread
+            run(mistakes, 0)
+        else:
+            threads = []
+            for i in range(round):
+                # Sample a batch of mistakes
+                batch_mistakes = random.sample(mistakes, min(20, len(mistakes)))
+                
+                # Create and start a thread for this batch
+                thread = threading.Thread(target=run, args=(batch_mistakes, i))
+                threads.append(thread)
+                thread.start()
 
-        for thread in threads:
-            thread.join()
+            for thread in threads:
+                thread.join()
         
         new_filters = [filter for sublist in new_filters for filter in sublist]
         
@@ -718,19 +723,22 @@ class LLMBuddy:
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes, old_rubric=rubric)
                 new_filters[round_index].append(new_filter)
 
-        
-        threads = []
-        for i in range(round):
-            # Sample a batch of mistakes
-            batch_mistakes = random.sample(mistakes, min(10, len(mistakes)))
-            
-            # Create and start a thread for this batch
-            thread = threading.Thread(target=run, args=(batch_mistakes, i))
-            threads.append(thread)
-            thread.start()
+        if len(mistakes) <= 10:
+            # if there are not enough mistakes, we will simply run the task in a single thread
+            run(mistakes, 0)
+        else:
+            threads = []
+            for i in range(round):
+                # Sample a batch of mistakes
+                batch_mistakes = random.sample(mistakes, min(10, len(mistakes)))
+                
+                # Create and start a thread for this batch
+                thread = threading.Thread(target=run, args=(batch_mistakes, i))
+                threads.append(thread)
+                thread.start()
 
-        for thread in threads:
-            thread.join()
+            for thread in threads:
+                thread.join()
         
         new_filters = [filter for sublist in new_filters for filter in sublist]
 
@@ -793,7 +801,7 @@ class LLMBuddy:
         new_filters = utils.deduplicate_filters(new_filters)
         return new_filters
     
-    def generate_interesting_clusters(self, filter, mistakes):
+    def generate_interesting_clusters(self, filter, mistakes, min_samples=3):
         logger.info(f'There are in total {len(mistakes)} mistakes for the filter {filter.name}')
         reflections = self.reflect_on_mistakes_parellel(filter, mistakes)
         for index, mistake in enumerate(mistakes):
@@ -824,7 +832,8 @@ class LLMBuddy:
 
         # if we want to edit an existing rubric
         if filter.positives:
-            now_clusters = self.cluster_mistakes_for_rubrics(filter.positives, mistakes)
+            now_clusters = self.cluster_mistakes_for_rubrics(filter.positives, mistakes, min_samples=min_samples)
+            logger.info(f'We have {len(now_clusters)} clusters for editing positive rubrics')
             for positive_rubric, cluster in now_clusters.items():
                 refine_clusters.append({
                     'cluster': cluster,
@@ -834,7 +843,8 @@ class LLMBuddy:
                 })
         
         if filter.negatives:
-            now_clusters = self.cluster_mistakes_for_rubrics(filter.negatives, mistakes)
+            now_clusters = self.cluster_mistakes_for_rubrics(filter.negatives, mistakes, min_samples=min_samples)
+            logger.info(f'We have {len(now_clusters)} clusters for editing negative rubrics')
             for negative_rubric, cluster in now_clusters.items():
                 refine_clusters.append({
                     'cluster': cluster,
@@ -989,7 +999,7 @@ class LLMBuddy:
             return interpretation
     
     def refine_prompt_for_one_mistake(self, filter, mistake):
-        refine_infos = self.generate_interesting_clusters(filter, [mistake])
+        refine_infos = self.generate_interesting_clusters(filter, [mistake], min_samples=1)
         return self.refine_prompt(filter, refine_infos)
 
     def refine_prompt(self, filter, refine_cluster):
@@ -1017,7 +1027,7 @@ class LLMBuddy:
         for training_example in filter.training_examples:
             weight = 1
             if training_example['id'] in focused_comment_ids:
-                weight = 8
+                weight = 5
             training_example['weight'] = weight
 
         best_filters = self.select_best_filters(
@@ -1102,7 +1112,11 @@ class LLMBuddy:
                 comments_copy = new_filter.predict_comments_consistently(comments_copy)
                 performance = utils.eval_performance(comments_copy, print_comments=False)
                 performances.append(performance['f1'])
-                logger.info('Performance:', performance)
+                logger.info(f'Accuracy: {performance["accuracy"]}, F1: {performance["f1"]}, Precision: {performance["precision"]}, Recall: {performance["recall"]}')
+                
+                higher_weight_comments = [comment for comment in comments_copy if comment['weight'] > 1]
+                perf_on_higher_weights_comments = utils.eval_performance(higher_weight_comments, print_comments=False)
+                logger.info(f'Accuracy on higher weight comments: {perf_on_higher_weights_comments["accuracy"]}')
             # return the top N best filters
             best_indices = np.argsort(performances)[::-1][:topN]
             best_filters = [filters[i] for i in best_indices]

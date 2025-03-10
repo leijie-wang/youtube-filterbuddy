@@ -216,9 +216,9 @@ def eval_performance(now_comments, print_comments=False):
 
     # Calculate metrics
     accuracy = accuracy_score(y_true, y_pred, sample_weight=weights)
-    precision = precision_score(y_true, y_pred, average='binary', sample_weight=weights)
-    recall = recall_score(y_true, y_pred, average='binary', sample_weight=weights)
-    f1 = f1_score(y_true, y_pred, average='binary', sample_weight=weights)  
+    precision = precision_score(y_true, y_pred, average='binary', sample_weight=weights, zero_division=0)
+    recall = recall_score(y_true, y_pred, average='binary', sample_weight=weights, zero_division=0)
+    f1 = f1_score(y_true, y_pred, average='binary', sample_weight=weights, zero_division=0)  
     
     # Print results
     if print_comments:
