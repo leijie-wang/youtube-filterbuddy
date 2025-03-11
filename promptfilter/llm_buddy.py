@@ -1,4 +1,5 @@
 import copy
+import comm
 import ipywidgets as widgets
 from IPython.display import display
 import threading
@@ -615,9 +616,10 @@ class LLMBuddy:
     def edit_rubric(self, filter, rubric, mistakes, rubric_kind, candidate_num=2, round=2, prefilter=False):
         logger.info('*' * 100)
         logger.info(f'We are editing the {rubric_kind} rubric with {len(mistakes)} mistakes: {rubric}')
-        for mistake in mistakes:
-            logger.info(f"\t{mistake['groundtruth']}\t{mistake['content']}\n\t{mistake['reflection']}\n")
-            logger.info('-' * 50)
+        if len(mistakes) < 3:
+            for mistake in mistakes:
+                logger.info(f"\t{mistake['groundtruth']}\t{mistake['content']}\n\t{mistake['reflection']}\n")
+                logger.info('-' * 50)
         system_prompt = f"""
             <Task>
                 A content creator is writing down their content moderation preference as a prompt.
@@ -750,14 +752,12 @@ class LLMBuddy:
             return best_filters
         else:
             return new_filters
-    
-    def add_few_shots(self, filter, comments, k=4, rounds=3, sample_preferences=None):
+
+    def generate_few_shots(self, filter, comments, k=4, rounds=3, sample_preferences='short-comments'):
         """
         Add a few shots to the filter by asking the user to label the groundtruth of the comments.
         """
         def select_examples(sample_from):
-            
-
             if sample_preferences == 'short-comments':
                 sample_from = [comment for comment in sample_from if len(comment['content']) < 200]
             elif sample_preferences == 'high-confidence':
@@ -801,6 +801,12 @@ class LLMBuddy:
         new_filters = utils.deduplicate_filters(new_filters)
         return new_filters
     
+    def add_few_shots(self, filter, comments):
+        comments_copy = [comment.copy() for comment in comments]
+        new_filters = self.generate_few_shots(filter, comments_copy)
+        best_filters = self.select_best_filters(new_filters, comments, topN=1)
+        return best_filters[0]
+
     def generate_interesting_clusters(self, filter, mistakes, min_samples=3):
         logger.info(f'There are in total {len(mistakes)} mistakes for the filter {filter.name}')
         reflections = self.reflect_on_mistakes_parellel(filter, mistakes)
@@ -1002,14 +1008,16 @@ class LLMBuddy:
         refine_infos = self.generate_interesting_clusters(filter, [mistake], min_samples=1)
         return self.refine_prompt(filter, refine_infos)
 
-    def refine_prompt(self, filter, refine_cluster):
-        if 'action' not in refine_cluster:
-            refine_clusters = self.generate_interesting_clusters(filter, refine_cluster['cluster'])
-        else:
-            refine_clusters = [refine_cluster]
+    def refine_prompt(self, filter, refine_clusters, weighted=True):
+        if not isinstance(refine_clusters, list):
+            if 'action' not in refine_clusters:
+                refine_clusters = self.generate_interesting_clusters(filter, refine_clusters['cluster'])
+            else:
+                refine_clusters = [refine_clusters]
         
         start_time = time.time()
-        new_filters = []
+        # we add filter to the new filters to ensure that the performance does not drop
+        new_filters = [filter]
         for refine_info in refine_clusters:
             if refine_info['action'] == 'add':
                 new_filters.extend(self.add_new_rubric(filter, refine_info['cluster'], refine_info['kind']))
@@ -1021,14 +1029,22 @@ class LLMBuddy:
 
         start_time = time.time()
         # TODO: determine how should we build the training dataset and how to highlight the mistakes.
-        
+
         # we increase the weight of the focused comments
-        focused_comment_ids = [comment['id'] for comment in refine_cluster['cluster']]
-        for training_example in filter.training_examples:
-            weight = 1
-            if training_example['id'] in focused_comment_ids:
-                weight = 5
-            training_example['weight'] = weight
+        if weighted:
+            focused_comment_ids = []
+            for refine_cluster in refine_clusters:
+                focused_comment_ids.extend([comment['id'] for comment in refine_cluster['cluster']])
+            focused_comment_ids = list(set(focused_comment_ids))
+            
+            for training_example in filter.training_examples:
+                weight = 1
+                if training_example['id'] in focused_comment_ids:
+                    weight = 5
+                training_example['weight'] = weight
+        else:
+            for training_example in filter.training_examples:
+                training_example['weight'] = 1
 
         best_filters = self.select_best_filters(
             new_filters, filter.training_examples, topN=1
@@ -1115,12 +1131,44 @@ class LLMBuddy:
                 logger.info(f'Accuracy: {performance["accuracy"]}, F1: {performance["f1"]}, Precision: {performance["precision"]}, Recall: {performance["recall"]}')
                 
                 higher_weight_comments = [comment for comment in comments_copy if comment['weight'] > 1]
-                perf_on_higher_weights_comments = utils.eval_performance(higher_weight_comments, print_comments=False)
-                logger.info(f'Accuracy on higher weight comments: {perf_on_higher_weights_comments["accuracy"]}')
+                if higher_weight_comments:
+                    perf_on_higher_weights_comments = utils.eval_performance(higher_weight_comments, print_comments=False)
+                    logger.info(f'Accuracy on higher weight comments: {perf_on_higher_weights_comments["accuracy"]}')
             # return the top N best filters
             best_indices = np.argsort(performances)[::-1][:topN]
             best_filters = [filters[i] for i in best_indices]
             return best_filters
+
+    def calibrate_prompt(self, filter, annotations, rounds=3):
+        """
+        Calibrate the filter by running automatic prompt optimization algorithms.
+        """
+        for annotation in annotations:
+            annotation['weight'] = 1
+
+        start_time = time.time()
+        def identify_mistakes(now_filter):
+            annotations_copy = [annotation.copy() for annotation in annotations]
+            annotations_copy = now_filter.predict_comments_consistently(annotations_copy)
+            mistakes = [annotation for annotation in annotations_copy if annotation['groundtruth'] != annotation['prediction']]
+            return mistakes
+        
+        for round_index in range(rounds):
+            logger.info('$' * 150)
+            logger.info(f'Round {round_index + 1} of calibration for the filter {filter.name}')
+            mistakes = identify_mistakes(filter)
+            refine_clusters = self.generate_interesting_clusters(filter, mistakes)
+            filter = self.refine_prompt(filter, refine_clusters, weighted=False)
+        
+        logger.info('$' * 150)
+        logger.info(f'We finally start to add few shots to the filter')
+    
+        # then add few shot examples
+        filter = self.add_few_shots(filter, annotations)
+
+        end_time = time.time()
+        logger.info(f'It takes {end_time - start_time} seconds to calibrate the filter {filter.name}')
+        return filter
 
     def label_groundtruth(self, now_comments, filter):
         # Current index tracker

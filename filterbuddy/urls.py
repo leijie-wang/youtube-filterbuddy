@@ -37,7 +37,8 @@ urlpatterns = [
     path('prompt/refresh/', promptviews.refresh_predictions),
 
     path('prompt/initialize/', promptviews.initialize_prompt),
-    
+    path('prompt/calibrate/', promptviews.calibrate_prompt),
+
     path('prompt/explore/', promptviews.explore_prompt),
     path('prompt/groundtruth/', promptviews.save_groundtruth),
     path('prompt/save/', promptviews.save_prompt),

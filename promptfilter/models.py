@@ -293,12 +293,16 @@ class PromptFilter(models.Model):
             # we randomly sample 100 comments because users might still quickly iterate on the filter
             # and we want to avoid wasting too many API calls
             comments = list(comments.all())
-            comments = random.sample(comments, min(100, len(comments)))
+            comments = random.sample(comments, min(200, len(comments)))
             logger.info(f'Initializing filter {self.name} with {len(comments)} comments.')
         elif mode == 'iteration':
             # we only select comments with groundtruths; they must have corresponding predictions
             comments = self.matches.filter(groundtruth__isnull=False)   
             logger.info(f'Iterating filter {self.name} with {len(comments)} comments.')
+        elif mode == 'refresh':
+            # only select comments that have predictions
+            comments = self.matches.all()
+            logger.info(f'Refreshing filter {self.name} with {len(comments)} comments.')
         return comments
 
 class MistakeCluster(models.Model):

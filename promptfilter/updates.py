@@ -24,7 +24,7 @@ def update_predictions(filter, mode, now_synchronized=None, start_date=None):
     
     # We should not update the last_run time in the iteration mode
     # TODO: think about whether we should update the last_run time in the initialize mode
-    if mode not in ['initialize', 'iteration']:
+    if mode not in ['initialize', 'iteration', 'refresh']:
         filter.last_run = datetime.now() if now_synchronized is None else now_synchronized
         filter.save()
 

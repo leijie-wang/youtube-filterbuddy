@@ -580,7 +580,22 @@ def refine_prompt(request):
             'taskId': task_id
         }, safe=False
     )
-    
+
+@user_verification_required
+def calibrate_prompt(request):
+    request_data = json.loads(request.body)
+    filter = request_data.get('filter')
+
+    task = tasks.calibrate_prompt_task.delay(filter['id'])
+    task_id = task.id
+    return JsonResponse(
+        {
+            'message': f"We have started to calibrate the prompt for the filter {filter['name']}.",
+            'taskId': task_id
+        }, safe=False
+    )
+
+  
 @user_verification_required
 def save_prompt(request):
 

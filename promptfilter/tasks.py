@@ -75,6 +75,30 @@ def generate_clusters_task(filter_id):
     return { 'clusters': cluster_instances }
 
 @shared_task
+def calibrate_prompt_task(filter_id):
+    filter = PromptFilter.objects.get(id=filter_id)
+    logger.info(f"Calibrating prompt for filter {filter.name}")
+
+    backend_filter = BackendPromptFilter.create_backend_filter(filter)
+    annotations = FilterPrediction.objects.filter(
+        filter=filter,
+        groundtruth__isnull=False
+    ).all()
+
+    annotations = [annotation.serialize() for annotation in annotations]
+
+    buddy = LLMBuddy()
+    calibrated_filter = buddy.calibrate_prompt(backend_filter, annotations)
+    logger.info(f"Calibrated prompt for filter {filter.name} has been completed.")
+
+    calibrated_filter = calibrated_filter.serialize()
+    filter = filter.update_filter(calibrated_filter)
+    # update predictions
+    update_predictions(filter, 'refresh')
+    return { 'calibratedFilter': calibrated_filter}
+
+
+@shared_task
 def select_interesting_comments_task(filter_id, needed_num):
     buddy = LLMBuddy()
     # sample a balanced set of positive and negative comments
