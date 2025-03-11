@@ -95,7 +95,7 @@ def calibrate_prompt_task(filter_id):
     filter = filter.update_filter(calibrated_filter)
     # update predictions
     update_predictions(filter, 'refresh')
-    return { 'calibratedFilter': calibrated_filter}
+    return { 'calibratedFilter': filter.serialize() }
 
 
 @shared_task
