@@ -77,7 +77,9 @@ def generate_clusters_task(filter_id):
 @shared_task
 def calibrate_prompt_task(filter_id):
     filter = PromptFilter.objects.get(id=filter_id)
+    logger.info('#' * 100)
     logger.info(f"Calibrating prompt for filter {filter.name}")
+    logger.info('#' * 100)
 
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
     annotations = FilterPrediction.objects.filter(
@@ -89,8 +91,9 @@ def calibrate_prompt_task(filter_id):
 
     buddy = LLMBuddy()
     calibrated_filter = buddy.calibrate_prompt(backend_filter, annotations)
+    logger.info('#' * 100)
     logger.info(f"Calibrated prompt for filter {filter.name} has been completed.")
-
+    logger.info('#' * 100)
     calibrated_filter = calibrated_filter.serialize()
     filter = filter.update_filter(calibrated_filter)
     # update predictions

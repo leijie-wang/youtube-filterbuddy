@@ -164,8 +164,10 @@ def authorize_user(request):
     
     if whether_test is None:
         user = User.objects.filter(username=handle).first()
+        logger.info(f'As the wheter test is None, we look for previous settings for the user {user}')
         if user is not None:
             # if the user has already authorized, then we will use the previous settings
+            logger.info(f'The user {handle} has already been created with moderation access as {user.moderation_access}.')
             whether_test = not user.moderation_access
     logger.info(f'We try to authorize the user {handle} with the test mode {whether_test}.')
     # for authentication without oauth
@@ -595,7 +597,6 @@ def calibrate_prompt(request):
         }, safe=False
     )
 
-  
 @user_verification_required
 def save_prompt(request):
 

@@ -13,7 +13,7 @@
         {
             "label": "Start Django",
             "type": "shell",
-            "command": "source ../backend-venv/bin/activate && python manage.py runserver",
+            "command": "source venv/bin/activate && python manage.py runserver",
             "problemMatcher": [],
             "group": "build",
             "presentation": {
@@ -25,7 +25,7 @@
         {
             "label": "Start Celery",
             "type": "shell",
-            "command": "source ../backend-venv/bin/activate && celery -A filterbuddy worker --loglevel=info --pool=threads",
+            "command": "source venv/bin/activate && celery -A filterbuddy worker --loglevel=info --pool=threads",
             "problemMatcher": [],
             "group": "build",
             "presentation": {
@@ -37,7 +37,7 @@
         {
             "label": "Start Celery Beat",
             "type": "shell",
-            "command": "source ../backend-venv/bin/activate && celery -A filterbuddy beat --loglevel=info",
+            "command": "source venv/bin/activate && celery -A filterbuddy beat --loglevel=info",
             "problemMatcher": [],
             "group": "build",
                 "presentation": {

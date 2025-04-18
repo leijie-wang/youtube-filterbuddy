@@ -290,7 +290,7 @@ class PromptFilter(models.Model):
             else:
                 comments = list(comments.order_by('posted_at'))
         elif mode == 'initialize':
-            # we randomly sample 100 comments because users might still quickly iterate on the filter
+            # we randomly sample 200 comments because users might still quickly iterate on the filter
             # and we want to avoid wasting too many API calls
             comments = list(comments.all())
             comments = random.sample(comments, min(200, len(comments)))

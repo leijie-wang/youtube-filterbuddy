@@ -34,7 +34,7 @@ SECRET_KEY = 'django-insecure-vsvaxkpg@#da10^j2)!6zp0n#p65*bo*^aje3h3!!z$sop9r&b
 DEBUG = True
 
 ALLOWED_HOSTS = [
-    'localhost', '127.0.0.1', '13.59.184.153', 
+    'localhost', '127.0.0.1', '13.59.184.153', '192.168.1.9',
     'youtube.filterbuddypro.com', 
     'api.youtube.filterbuddypro.com',
     'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
@@ -42,12 +42,14 @@ ALLOWED_HOSTS = [
 
 # CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
+    'http://192.168.1.9:3001',
     'http://localhost:3001',
     'https://youtube.filterbuddypro.com',
     'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
 ]
 
 CSRF_TRUSTED_ORIGINS = [
+    'http://192.168.1.9:3001',
     'http://localhost:3001',
     'https://youtube.filterbuddypro.com',
     'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',

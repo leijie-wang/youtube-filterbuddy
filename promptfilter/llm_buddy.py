@@ -603,7 +603,7 @@ class LLMBuddy:
                 thread.join()
         
         new_filters = [filter for sublist in new_filters for filter in sublist]
-        
+        logger.info('*' * 100)
         if prefilter:
             # evaluate the performances of the new filters on the mistakes dataset and select the top 3.
             batch_size = min(20, len(mistakes)//3)
@@ -815,9 +815,10 @@ class LLMBuddy:
             mistake['embedding'] = reflections[index]['embedding']
         
         refine_clusters = []
-        # if we want to add a new rubric
+        
         false_positives = [mistake for mistake in mistakes if mistake['groundtruth'] == 0]
         false_negativse = [mistake for mistake in mistakes if mistake['groundtruth'] == 1]
+        # if we want to add a new negative rubric
         if false_positives:
             now_clusters = self.cluster_mistakes_unsupervised(false_positives)
             for cluster in now_clusters:
@@ -826,7 +827,7 @@ class LLMBuddy:
                     'kind': 'negative',
                     'action': 'add',
                 })
-        
+        # if we want to add a new positive rubric
         if false_negativse:
             now_clusters = self.cluster_mistakes_unsupervised(false_negativse)
             for cluster in now_clusters:
@@ -836,7 +837,7 @@ class LLMBuddy:
                     'action': 'add'
                 })
 
-        # if we want to edit an existing rubric
+        # if we want to edit an existing positive rubric
         if filter.positives:
             now_clusters = self.cluster_mistakes_for_rubrics(filter.positives, mistakes, min_samples=min_samples)
             logger.info(f'We have {len(now_clusters)} clusters for editing positive rubrics')
@@ -847,7 +848,7 @@ class LLMBuddy:
                     'action': 'edit',
                     'rubric': positive_rubric
                 })
-        
+        # if we want to edit an existing negative rubric
         if filter.negatives:
             now_clusters = self.cluster_mistakes_for_rubrics(filter.negatives, mistakes, min_samples=min_samples)
             logger.info(f'We have {len(now_clusters)} clusters for editing negative rubrics')
@@ -1068,6 +1069,7 @@ class LLMBuddy:
 
         @return: a list of the best filters
         """
+        logger.info('#' * 100)
         if(len(comments) < 2 * batch_size):
             strategy = 'overall'
             logger.info(f'Not enough comments to run bandit strategy. Switching to overall strategy.')
@@ -1123,18 +1125,19 @@ class LLMBuddy:
         elif strategy == 'overall':
             logger.info(f"Running overall strategy with {len(filters)} filters to select the top {topN}.")
             performances = []
-            for new_filter in filters:
+            for index, new_filter in enumerate(filters):
                 comments_copy = [comment.copy() for comment in comments]
                 comments_copy = new_filter.predict_comments_consistently(comments_copy)
                 performance = utils.eval_performance(comments_copy, print_comments=False)
                 performances.append(performance['f1'])
-                logger.info(f'Accuracy: {performance["accuracy"]}, F1: {performance["f1"]}, Precision: {performance["precision"]}, Recall: {performance["recall"]}')
+                logger.info(f'Filter {index}: Accuracy {performance["accuracy"]}, F1 {performance["f1"]}, Precision {performance["precision"]}, Recall {performance["recall"]}')
                 
                 higher_weight_comments = [comment for comment in comments_copy if comment['weight'] > 1]
                 if higher_weight_comments:
                     perf_on_higher_weights_comments = utils.eval_performance(higher_weight_comments, print_comments=False)
                     logger.info(f'Accuracy on higher weight comments: {perf_on_higher_weights_comments["accuracy"]}')
             # return the top N best filters
+            logger.info('#' * 100)
             best_indices = np.argsort(performances)[::-1][:topN]
             best_filters = [filters[i] for i in best_indices]
             return best_filters
@@ -1147,16 +1150,18 @@ class LLMBuddy:
             annotation['weight'] = 1
 
         start_time = time.time()
-        def identify_mistakes(now_filter):
+        def identify_mistakes(now_filter, first_round=False):
             annotations_copy = [annotation.copy() for annotation in annotations]
-            annotations_copy = now_filter.predict_comments_consistently(annotations_copy)
+            if not first_round:
+                # we do not need to predict the comments for the first round as we save the predictions in database.
+                annotations_copy = now_filter.predict_comments_consistently(annotations_copy)
             mistakes = [annotation for annotation in annotations_copy if annotation['groundtruth'] != annotation['prediction']]
             return mistakes
         
         for round_index in range(rounds):
             logger.info('$' * 150)
             logger.info(f'Round {round_index + 1} of calibration for the filter {filter.name}')
-            mistakes = identify_mistakes(filter)
+            mistakes = identify_mistakes(filter, round_index == 0)
             refine_clusters = self.generate_interesting_clusters(filter, mistakes)
             filter = self.refine_prompt(filter, refine_clusters, weighted=False)
         

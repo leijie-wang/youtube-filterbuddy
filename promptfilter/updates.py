@@ -18,16 +18,18 @@ def update_predictions(filter, mode, now_synchronized=None, start_date=None):
     """
 
     comments = filter.retrieve_update_comments(mode, start_date)
-    if len(comments) == 0:
-        return None
-    logger.info(f'Filter {filter.name} has {len(comments)} comments at the mode {mode}.')
-    
+
     # We should not update the last_run time in the iteration mode
     # TODO: think about whether we should update the last_run time in the initialize mode
     if mode not in ['initialize', 'iteration', 'refresh']:
         filter.last_run = datetime.now() if now_synchronized is None else now_synchronized
         filter.save()
 
+    # we still want to update the last run even if the length of comments is 0; 
+    # for instance, when the user selects future comments.
+    if len(comments) == 0:
+        return None
+    logger.info(f'Filter {filter.name} has {len(comments)} comments at the mode {mode}.')
     comments = [comment.serialize() for comment in comments]
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
     comments_with_preds = backend_filter.predict_comments_consistently(comments)

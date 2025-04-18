@@ -356,10 +356,10 @@ class YoutubeAPI:
         )
 
         channel, created = Channel.objects.update_or_create(
-            owner=user,
             id=account_info['channel']['id'],  # Use channel ID as the unique key
             defaults={
                 'name': account_info['channel']['name'],
+                'owner': user,
             }
         )
         # if created:
