@@ -621,7 +621,8 @@ def save_prompt(request):
         filter.update_filter(new_filter)
         filter.save()
         
-        task = tasks.update_predictions_task.delay(filter.id, mode, start_date)
+        cached_predictions = new_filter.get('attributes', {}).get('predictions', None)
+        task = tasks.update_predictions_task.delay(filter.id, mode, start_date, cached_predictions)
         task_id = task.id
         return JsonResponse(
             {

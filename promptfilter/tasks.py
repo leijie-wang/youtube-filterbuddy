@@ -10,10 +10,10 @@ from .backend_filter import BackendPromptFilter
 from .llm_buddy import LLMBuddy
 
 @shared_task
-def update_predictions_task(filter_id, mode, start_date):
+def update_predictions_task(filter_id, mode, start_date, cached_predictions):
     logger.info(f"Updating predictions for filter {filter_id} with mode {mode}")
     filter = PromptFilter.objects.get(id=filter_id)
-    predictions = update_predictions(filter, mode, start_date=start_date)
+    predictions = update_predictions(filter, mode, start_date=start_date, cached_predictions=cached_predictions)
     logger.info(f"Predictions for filter {filter.name} have been updated.")
     return { }
 
@@ -141,6 +141,6 @@ def refine_prompt_task(filter_id, cluster):
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
 
     buddy = LLMBuddy()
-    refined_filter = buddy.refine_prompt(backend_filter, cluster)
+    refined_filters = buddy.refine_prompt(backend_filter, cluster)
     logger.info(f"Refined prompt for filter {filter.name} has been completed.")
-    return { 'refinedFilter': refined_filter.serialize() }
+    return { 'refinedFilters': [filter.serialize() for filter in refined_filters] }

@@ -207,12 +207,15 @@ def clean_comments(comments):
         )
     return new_comments
 
-def eval_performance(now_comments, print_comments=False):
+def eval_performance(now_comments, print_comments=False, weighted=True):
     # measure the performance in terms of accuracy, precision, recall, and F1 score
     # Extract ground truth and predictions
     y_true = [comment['groundtruth'] for comment in now_comments]
     y_pred = [comment['prediction'] for comment in now_comments]
-    weights = [comment['weight'] for comment in now_comments]
+    if weighted:
+        weights = [comment['weight'] for comment in now_comments]
+    else:
+        weights = [1 for comment in now_comments]
 
     # Calculate metrics
     accuracy = accuracy_score(y_true, y_pred, sample_weight=weights)

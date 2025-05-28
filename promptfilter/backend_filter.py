@@ -35,6 +35,7 @@ class BackendPromptFilter:
         self.histories = []
 
         self.channel_id = kwargs.get('channelId', None)
+        self.attributes = {}
 
     @classmethod
     def create_backend_filter(cls, promptfilter):
@@ -143,11 +144,11 @@ class BackendPromptFilter:
             """
         return filter_string
     
-    def predict_comments_consistently(self, comments, **kwargs):
+    def predict_comments_consistently(self, comments, cached_predictions=None, **kwargs):
         prompt_str = self.stringify_filter(structured=False)
         # logger.info(f'We are running LLMs with debug mode: {RANDOM_PREDICTION}.')
         prompt_filter = BasicPromptFilter(prompt_str, debug=RANDOM_PREDICTION)
-        return prompt_filter.predict_comments_consistently(comments, rounds=5)
+        return prompt_filter.predict_comments_consistently(comments, cached_predictions=cached_predictions, rounds=5)
 
     def serialize(self):
         return {
@@ -158,4 +159,5 @@ class BackendPromptFilter:
             'negatives': [negative for negative in self.negatives],
             'fewShotExamples': self.few_shots,
             'examples': self.training_examples,
+            'attributes': self.attributes,
         }

@@ -1,3 +1,4 @@
+import comm
 from django.conf import settings
 from collections import defaultdict
 import logging
@@ -401,7 +402,7 @@ class BasicPromptFilter:
             }
         return results
         
-    def predict_comments_consistently(self, comments, **kwargs):
+    def predict_comments_consistently(self, comments, cached_predictions=None, **kwargs):
         """
             Predict the comments using the filter.
 
@@ -409,15 +410,16 @@ class BasicPromptFilter:
 
             @return: a list of serialized comments with predictions and confidence scores.
         """
-        
+        cached_predictions = cached_predictions if cached_predictions is not None else {}
+        unpredicted_comments = [comment for comment in comments if comment['id'] not in cached_predictions]
         start_time = time.time()
-        predictions = self.predict_with_majority_vote(comments, **kwargs)
+        predictions = self.predict_with_majority_vote(unpredicted_comments, **kwargs)
         end_time = time.time()
         logger.info(f'Predictions for majority voting completed in {end_time - start_time:.2f} seconds.\n')
 
 
         for comment in comments:
-            comment_pred = predictions[comment['id']]
+            comment_pred = predictions[comment['id']] if comment['id'] in predictions else cached_predictions[comment['id']]
             comment['prediction'] = comment_pred['prediction']
             comment['confidence'] = comment_pred['confidence']
 

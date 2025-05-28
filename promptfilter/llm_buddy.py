@@ -1,3 +1,4 @@
+from calendar import c
 import copy
 import comm
 import ipywidgets as widgets
@@ -193,6 +194,10 @@ class LLMBuddy:
         # if there are not enough predictions, we will create new comments
         while ((len(positive_comments) + len(negative_comments)) < 2 * N) and (total_predictions < 20 * N):
             predictions = produce_new_predictions()
+            # what if there are less than 200 comments in total?
+            if len(predictions) == 0:
+                logger.info('No more comments to sample')
+                break
             sample_interesting_comments()
             
             
@@ -450,13 +455,13 @@ class LLMBuddy:
 
         return reflections
 
-    def cluster_mistakes_unsupervised(self, mistakes):
+    def cluster_mistakes_unsupervised(self, mistakes, min_samples=2):
         """Cluster mistakes based on their similarity which could help propose a new rubric."""
         if len(mistakes) == 1:
             # special cases: when the user only wants to refine on one mistake.
             return [mistakes]
 
-        def generate_clusters(now_mistakes, eps, min_samples=2):
+        def generate_clusters(now_mistakes, eps):
             now_embeddings = [item['embedding'] for item in now_mistakes]
             now_embeddings = np.array(now_embeddings)
             # this ensures that the generated clusters contains at least 2 items
@@ -507,7 +512,13 @@ class LLMBuddy:
             if dist < threshold:
                 clustered_mistakes[rubrics[min_idx]['rubric']].append(mistakes[i])
         
-        clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if len(mistakes) >= min_samples }
+        if len(mistakes) >= 2 * min_samples:
+            # we only filter out the clusters that are too small when we have enough mistakes
+            # otherwise, we will keep all the clusters, for instance, when the user only wants to refine on one mistake.
+            clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if len(mistakes) >= min_samples }
+        else:
+            # we want to remove empty clusters
+            clustered_mistakes = { rubric: mistakes for rubric, mistakes in clustered_mistakes.items() if len(mistakes) >= 1 }
             
         return clustered_mistakes
 
@@ -582,6 +593,7 @@ class LLMBuddy:
                 new_filter = copy.deepcopy(filter)
                 logger.info(f'[Prompt Candidate] Add a new {rubric_kind} rubric: {new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes)
+                new_filter.attributes['action'] = 'Add a new rubric'
                 new_filters[round_index].append(new_filter)
         
         
@@ -723,6 +735,7 @@ class LLMBuddy:
                 new_filter = copy.deepcopy(filter)
                 logger.info(f'\t--{new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes, old_rubric=rubric)
+                new_filter.attributes['action'] = 'Edit an existing rubric'
                 new_filters[round_index].append(new_filter)
 
         if len(mistakes) <= 10:
@@ -794,6 +807,7 @@ class LLMBuddy:
         for _ in range(rounds):
             few_shots_examples = select_examples(mistake_comments)
             new_filter = copy.deepcopy(filter)
+            # can we add new examples to the filter?
             new_filter.few_shots = few_shots_examples
             new_filters.append(new_filter)
         
@@ -820,7 +834,7 @@ class LLMBuddy:
         false_negativse = [mistake for mistake in mistakes if mistake['groundtruth'] == 1]
         # if we want to add a new negative rubric
         if false_positives:
-            now_clusters = self.cluster_mistakes_unsupervised(false_positives)
+            now_clusters = self.cluster_mistakes_unsupervised(false_positives, min_samples=min_samples)
             for cluster in now_clusters:
                 refine_clusters.append({
                     'cluster': cluster,
@@ -829,7 +843,7 @@ class LLMBuddy:
                 })
         # if we want to add a new positive rubric
         if false_negativse:
-            now_clusters = self.cluster_mistakes_unsupervised(false_negativse)
+            now_clusters = self.cluster_mistakes_unsupervised(false_negativse, min_samples=min_samples)
             for cluster in now_clusters:
                 refine_clusters.append({
                     'cluster': cluster,
@@ -1004,21 +1018,20 @@ class LLMBuddy:
             logger.info(f'Add new rubric response\n: {response}\n\n')
             interpretation = self.llm_client.extract_xml(response, "Explanation")
             return interpretation
-    
-    def refine_prompt_for_one_mistake(self, filter, mistake):
-        refine_infos = self.generate_interesting_clusters(filter, [mistake], min_samples=1)
-        return self.refine_prompt(filter, refine_infos)
 
     def refine_prompt(self, filter, refine_clusters, weighted=True):
         if not isinstance(refine_clusters, list):
+            # when we only have one cluster, as opposed to a list of clusters
             if 'action' not in refine_clusters:
+                # we need to generate clusters that correspond to various actions to refine the prompt
                 refine_clusters = self.generate_interesting_clusters(filter, refine_clusters['cluster'])
             else:
                 refine_clusters = [refine_clusters]
         
         start_time = time.time()
         # we add filter to the new filters to ensure that the performance does not drop
-        new_filters = [filter]
+        # we deep copy it to avoid modifying the original filter
+        new_filters = [copy.deepcopy(filter)]
         for refine_info in refine_clusters:
             if refine_info['action'] == 'add':
                 new_filters.extend(self.add_new_rubric(filter, refine_info['cluster'], refine_info['kind']))
@@ -1041,11 +1054,20 @@ class LLMBuddy:
             for training_example in filter.training_examples:
                 weight = 1
                 if training_example['id'] in focused_comment_ids:
-                    weight = 5
+                    weight = 2
                 training_example['weight'] = weight
         else:
             for training_example in filter.training_examples:
                 training_example['weight'] = 1
+
+        # we want to avoid wasting resources on predictions we have already calculated.
+        new_filters[0].attributes['predictions'] = {
+            example['id']: {
+                'prediction': example['prediction'],
+                'groundtruth': example['groundtruth'],
+                'confidence': example['confidence'],
+            } for example in filter.training_examples
+        }
 
         best_filters = self.select_best_filters(
             new_filters, filter.training_examples, topN=1
@@ -1053,7 +1075,7 @@ class LLMBuddy:
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to select the best filter among {len(new_filters)} candidates')
 
-        return best_filters[0]
+        return best_filters
 
     def select_best_filters(self, filters, comments, strategy='bandit', topN=1, epochs=None, batch_size=20, exploration=5):
         """
@@ -1074,6 +1096,7 @@ class LLMBuddy:
             strategy = 'overall'
             logger.info(f'Not enough comments to run bandit strategy. Switching to overall strategy.')
 
+        high_weights_comments_ids = set([comment['id'] for comment in comments if comment['weight'] > 1])
         if strategy == 'bandit':
             logger.info(f"Running bandit strategy with {len(filters)} filters to select the top {topN} from {len(comments)} comments.")
             
@@ -1106,9 +1129,17 @@ class LLMBuddy:
                 best_filter = filters[best_arm]
 
                 comments_copy = [comment.copy() for comment in samples]
+                if 'predictions' not in best_filter.attributes:
+                    best_filter.attributes['predictions'] = {}
+                comments_copy = best_filter.predict_comments_consistently(comments_copy, best_filter.attributes['predictions'])
 
-                comments_copy = best_filter.predict_comments_consistently(comments_copy)
-                performance = utils.eval_performance(comments_copy, print_comments=False)
+                for comment in comments_copy:
+                    best_filter.attributes['predictions'][comment['id']] = {
+                        'prediction': comment['prediction'],
+                        'groundtruth': comment['groundtruth'],
+                        'confidence': comment['confidence'],
+                    }
+                performance = utils.eval_performance(comments_copy, print_comments=False, weighted=False)
                 values[best_arm] += performance['f1'] / counts[best_arm]
 
                 actual_best_arm = np.argmax(values)
@@ -1125,22 +1156,57 @@ class LLMBuddy:
         elif strategy == 'overall':
             logger.info(f"Running overall strategy with {len(filters)} filters to select the top {topN}.")
             performances = []
+            performances_high_weights = []
             for index, new_filter in enumerate(filters):
                 comments_copy = [comment.copy() for comment in comments]
                 comments_copy = new_filter.predict_comments_consistently(comments_copy)
-                performance = utils.eval_performance(comments_copy, print_comments=False)
+                # we want to save the predictions in the filter attributes
+                # so that we can use them when this filter is accepted.
+                new_filter.attributes['predictions'] = {
+                    comment['id']: {
+                        'prediction': comment['prediction'],
+                        'groundtruth': comment['groundtruth'],
+                        'confidence': comment['confidence'],
+                    } for comment in comments_copy
+                }
+                performance = utils.eval_performance(comments_copy, print_comments=False, weighted=False)
                 performances.append(performance['f1'])
                 logger.info(f'Filter {index}: Accuracy {performance["accuracy"]}, F1 {performance["f1"]}, Precision {performance["precision"]}, Recall {performance["recall"]}')
                 
-                higher_weight_comments = [comment for comment in comments_copy if comment['weight'] > 1]
-                if higher_weight_comments:
+                higher_weight_comments = [comment for comment in comments_copy if comment['id'] in high_weights_comments_ids]
+                if len(high_weights_comments_ids) > 0:
                     perf_on_higher_weights_comments = utils.eval_performance(higher_weight_comments, print_comments=False)
-                    logger.info(f'Accuracy on higher weight comments: {perf_on_higher_weights_comments["accuracy"]}')
+                    performances_high_weights.append(perf_on_higher_weights_comments['f1'])
+                    logger.info(f'Accuracy on higher weight comments: {perf_on_higher_weights_comments["f1"]}')
             # return the top N best filters
             logger.info('#' * 100)
-            best_indices = np.argsort(performances)[::-1][:topN]
-            best_filters = [filters[i] for i in best_indices]
-            return best_filters
+            if len(high_weights_comments_ids) == 0:
+                best_indices = np.argsort(performances)[::-1][:topN]
+                best_filters = [filters[i] for i in best_indices]
+                return best_filters
+            else:
+                # we want to first make sure that the performance on the high weights comments is not too low
+                base_perf = performances[0]
+                baseline_perf_high_weights = performances_high_weights[0]
+                best_indices = [0]
+                filters[0].attributes['kind'] = 'original'
+                for i in range(len(performances)):
+                    # we do not consider the original filter as best filters
+                    if performances_high_weights[i] > baseline_perf_high_weights:
+                        best_indices.append(i)
+                        changed_mistakes = abs(int((performances[i] - base_perf) * len(comments)))
+                        filters[i].attributes['changedMistakes'] = changed_mistakes
+                        if performances[i] > base_perf:
+                            filters[i].attributes['kind'] = 'best'
+                        else:
+                            filters[i].attributes['kind'] = 'trade-off'
+                # we further sort the best indices based on their overall performance from the highest to the lowest
+                # if there are indices before the original filter, they represent an optimal refinement of the original filter
+                # if there are only indices after the original filter, they represent a trade-off users need to make
+                # otherwise, we do not find any filter that is better than the original filter in any sense.
+                best_indices = sorted(best_indices, key=lambda x: performances[x], reverse=True)
+                best_filters = [filters[i] for i in best_indices]
+                return best_filters
 
     def calibrate_prompt(self, filter, annotations, rounds=3):
         """
@@ -1163,7 +1229,8 @@ class LLMBuddy:
             logger.info(f'Round {round_index + 1} of calibration for the filter {filter.name}')
             mistakes = identify_mistakes(filter, round_index == 0)
             refine_clusters = self.generate_interesting_clusters(filter, mistakes)
-            filter = self.refine_prompt(filter, refine_clusters, weighted=False)
+            refined_filters = self.refine_prompt(filter, refine_clusters, weighted=False)
+            filter = refined_filters[0]
         
         logger.info('$' * 150)
         logger.info(f'We finally start to add few shots to the filter')

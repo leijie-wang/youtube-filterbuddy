@@ -7,7 +7,7 @@ from .youtube import YoutubeAPI
 
 logger = logging.getLogger(__name__)
 
-def update_predictions(filter, mode, now_synchronized=None, start_date=None):
+def update_predictions(filter, mode, now_synchronized=None, start_date=None, cached_predictions=None):
     """When we call this function, we want to also execute the corresponding action for each True prediction.
 
         @mode: we have various modes to make sure we do not waste too much computational resources
@@ -32,7 +32,7 @@ def update_predictions(filter, mode, now_synchronized=None, start_date=None):
     logger.info(f'Filter {filter.name} has {len(comments)} comments at the mode {mode}.')
     comments = [comment.serialize() for comment in comments]
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
-    comments_with_preds = backend_filter.predict_comments_consistently(comments)
+    comments_with_preds = backend_filter.predict_comments_consistently(comments, cached_predictions=cached_predictions)
 
     # update the predictions in the database and execute the corresponding action
     youtube = YoutubeAPI(filter.channel.owner.oauth_credentials)
