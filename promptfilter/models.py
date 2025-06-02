@@ -223,7 +223,10 @@ class PromptFilter(models.Model):
         return False
 
     def update_filter(self, new_filter):
+        """
+            Update a PromptFilter instance with new data in a serialized format.
         
+        """
         self.description = new_filter.get('description', self.description)
         self.action = new_filter.get('action', self.action)
         # Helper function to process rubric updates
@@ -270,6 +273,16 @@ class PromptFilter(models.Model):
             if rubric not in updated_rubrics:
                 rubric.delete()  # Delete rubrics that are no longer relevant
 
+        for few_shot_example in new_filter.get('fewShotExamples', []):
+            if 'content' not in few_shot_example or 'groundtruth' not in few_shot_example:
+                logger.warning(f'Few-shot example {few_shot_example} is missing required fields.')
+                continue
+            new_example = Example.objects.create(
+                content=few_shot_example['content'],
+                groundtruth=few_shot_example['groundtruth']
+            )
+            new_example.save()
+            self.few_shot_examples.add(new_example)
         # Save final state
         self.save()
         return self

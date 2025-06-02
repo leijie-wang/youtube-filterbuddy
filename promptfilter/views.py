@@ -413,7 +413,7 @@ def explore_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
     needed_num = request_data.get('needed_num', 10)
-    logger.info('filter: {filter}')
+
     filter = PromptFilter.objects.filter(id=filter['id']).first()
     if filter is None:
         return JsonResponse(
@@ -470,6 +470,7 @@ def improve_prompt(request):
             }, safe=False
         )
 
+    
     # retrieve clusters for this filter and serialize them
     cluster_instances = MistakeCluster.objects.filter(filter=filter)
     if cluster_instances.count() > 0:

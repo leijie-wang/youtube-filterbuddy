@@ -47,6 +47,7 @@ def generate_clusters_task(filter_id):
         reflection = reflections[index]
         
         # Find the prediction instance using filter and comment ID
+        # this is because wthe id of the mistake refers to the id of the comment.
         prediction_instance = FilterPrediction.objects.filter(
             filter=filter,
             comment_id=mistake['id']
@@ -95,6 +96,7 @@ def calibrate_prompt_task(filter_id):
     logger.info(f"Calibrated prompt for filter {filter.name} has been completed.")
     logger.info('#' * 100)
     calibrated_filter = calibrated_filter.serialize()
+    logger.info(f"Calibrated filter: {calibrated_filter}")
     filter = filter.update_filter(calibrated_filter)
     # update predictions
     update_predictions(filter, 'refresh')
@@ -137,10 +139,10 @@ def sync_all_youtube_accounts():
 def refine_prompt_task(filter_id, cluster):
     
     filter = PromptFilter.objects.filter(id=filter_id).first()
-    logger.info(f"Refining prompt for filter {filter.name} with {len(cluster)} comments.")
+    logger.info(f"Refining prompt for filter {filter.name} with {len(cluster['cluster'])} comments.")
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
 
     buddy = LLMBuddy()
-    refined_filters = buddy.refine_prompt(backend_filter, cluster)
+    refined_filters = buddy.refine_prompt(backend_filter, cluster, topN=3)
     logger.info(f"Refined prompt for filter {filter.name} has been completed.")
     return { 'refinedFilters': [filter.serialize() for filter in refined_filters] }

@@ -818,7 +818,8 @@ class LLMBuddy:
     def add_few_shots(self, filter, comments):
         comments_copy = [comment.copy() for comment in comments]
         new_filters = self.generate_few_shots(filter, comments_copy)
-        best_filters = self.select_best_filters(new_filters, comments, topN=1)
+        best_filters = self.select_best_filters(new_filters, filter, comments, topN=1)
+
         return best_filters[0]
 
     def generate_interesting_clusters(self, filter, mistakes, min_samples=3):
@@ -915,9 +916,10 @@ class LLMBuddy:
                         Write down a sentence with less than 40 words that explains to the content creator how this {rubric_kind} rubric will be further edited to incorporate these nuances in misclassified comments.
                         
                         - Your explanation should be in the following format:
-                            'After examining your annotations, do you want to [summary of the edits we want to make]?'
+                            'Do you want to [summary of the edits we want to make]?'
                             Your should try to draw a clear contrast betweeen what the current prompt fails and what you want to change it to.
-                        - Keep the language of your explanation concise and specific; avoid being verbose, ambiguous, or overly general.
+                        - Keep the language of your explanation concise and specific; avoid being verbose, ambiguous, overly general, or use too complex words or jargons.
+                        - Keep relevant terms consistent in our system, in particular, "catch" versus "not catch" a category of comments. Avoid using "flagging", "excluding", "including", "removing" these related but different terms.
                         - We are doing this for content moderation to protect users' online experiences, so please do not refrain from using sensitive words or phrases in your rubric, which are necessary to accurately capture the user's preferences.
                     </step3>
                     
@@ -931,7 +933,7 @@ class LLMBuddy:
                         </ProblemComments>
 
                         <Explanation>
-                            Upon examining your annotations, do you also want to catch comments about committing suicide?
+                            Do you also want to catch comments about committing suicide, in addition to homicide?
                         </Explanation>
                     </Example>
                     <Example>
@@ -942,7 +944,7 @@ class LLMBuddy:
                         </ProblemComments>
 
                         <Explanation>
-                            After examining your annotations, do you want to further catch "bastard" while excluding milder terms like "fool"?
+                            Do you consider 'bastard', 'douchebag' derogatory terms, rather than milder terms like "fool"?
                         </Explanation>
                     <Example>
                 </Examples>
@@ -987,16 +989,17 @@ class LLMBuddy:
                         Write down a sentence with less than 40 words that explains to the content creator how a new {rubric_kind} rubric will be further added to incorporate these nuances in misclassified comments.
                         
                         - Your explanation should be in the following format:
-                            'After examining your annotations, do you want to [summary of the new rubric we want to add]?'
+                            'Do you want to [summary of the new rubric we want to add]?'
                             Your should try to draw a clear contrast betweeen what the current prompt fails and what you want to change it to.
                         - Keep the language of your explanation concise and specific; avoid being verbose, ambiguous, or overly general.
+                        - Keep relevant terms consistent in our system, in particular, "catch" versus "not catch" a category of comments. Avoid using "flagging", "excluding", "including", "removing" these related but different terms.
                         - We are doing this for content moderation to protect users' online experiences, so please do not refrain from using sensitive words or phrases in your rubric, which are necessary to accurately capture the user's preferences.
 
-                        Here are a few examples of good rubrics for your reference:
+                        Here are a few examples of good explanations for your reference:
                         - Your filter currently only lists derogatory terms like "scumbag" and "douchebag" as examples, 
-                            After examining your annotations, do you want to further catch "bastard" while excluding milder terms like "fool"?
+                            Do you want to further catch "bastard" while excluding milder terms like "fool"?
                         - Your filter currently only lists derogatory terms like "scumbag" and "douchebag" as examples, 
-                            After examining your annotations, do you want to further catch "bastard" while excluding milder terms like "fool"?
+                            Do you want to further catch "bastard" while excluding milder terms like "fool"?
                     </step2>
                 </steps>
 
@@ -1019,9 +1022,9 @@ class LLMBuddy:
             interpretation = self.llm_client.extract_xml(response, "Explanation")
             return interpretation
 
-    def refine_prompt(self, filter, refine_clusters, weighted=True):
+    def refine_prompt(self, filter, refine_clusters, topN, weighted=True):
         if not isinstance(refine_clusters, list):
-            # when we only have one cluster, as opposed to a list of clusters
+            # when we only have one cluster (a dict), as opposed to a list of clusters
             if 'action' not in refine_clusters:
                 # we need to generate clusters that correspond to various actions to refine the prompt
                 refine_clusters = self.generate_interesting_clusters(filter, refine_clusters['cluster'])
@@ -1031,7 +1034,7 @@ class LLMBuddy:
         start_time = time.time()
         # we add filter to the new filters to ensure that the performance does not drop
         # we deep copy it to avoid modifying the original filter
-        new_filters = [copy.deepcopy(filter)]
+        new_filters = []
         for refine_info in refine_clusters:
             if refine_info['action'] == 'add':
                 new_filters.extend(self.add_new_rubric(filter, refine_info['cluster'], refine_info['kind']))
@@ -1060,28 +1063,141 @@ class LLMBuddy:
             for training_example in filter.training_examples:
                 training_example['weight'] = 1
 
-        # we want to avoid wasting resources on predictions we have already calculated.
-        new_filters[0].attributes['predictions'] = {
-            example['id']: {
-                'prediction': example['prediction'],
-                'groundtruth': example['groundtruth'],
-                'confidence': example['confidence'],
-            } for example in filter.training_examples
-        }
-
         best_filters = self.select_best_filters(
-            new_filters, filter.training_examples, topN=1
+            new_filters, filter, filter.training_examples, topN=topN
         )
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to select the best filter among {len(new_filters)} candidates')
 
         return best_filters
 
-    def select_best_filters(self, filters, comments, strategy='bandit', topN=1, epochs=None, batch_size=20, exploration=5):
+    def __bandit_select_best_filters(self, filters, comments, topN, batch_size, exploration, epochs=None):
+        """
+        Select the best filter based on the performance on the comments using a bandit strategy.
+        
+        @param filters: a list of filters to select from, each should be an instance of PromptFilterBackend
+        @param comments: a list of comments of the type dict, with the key content and groundtruth
+        
+        @return: a list of the best filters
+        """
+        logger.info(f"Running bandit strategy with {len(filters)} filters to select the top {topN} from {len(comments)} comments.")
+        if topN is not None and topN > len(filters):
+            logger.warning(f'The topN {topN} is larger than the number of filters {len(filters)}. Return all filters directly.')
+            return filters
+        
+        records = []
+        counts = [0] * len(filters)
+        values = [0] * len(filters)
+
+        def select_best_arm(t):
+            
+            for arm in range(len(filters)):
+                # If any arm has not been pulled yet, choose it to explore
+                if counts[arm] == 0:
+                    return arm
+            
+            ucb_scores = []
+            for arm in range(len(filters)):
+                average_reward = values[arm]
+                bonus = exploration * ((np.log(t) / counts[arm])) ** 0.5
+                ucb_scores.append(average_reward + bonus)
+            best_arm = np.argmax(ucb_scores)
+            logger.info(f"Selecting the best arm for round {t} as {best_arm}.")
+            return best_arm
+
+        epochs = epochs if epochs else math.ceil(math.ceil(len(comments) / batch_size) * len(filters) * 0.4)
+        logger.info(f'\tWith {epochs} rounds, batch size {batch_size}, and exploration factor {exploration}.')
+        for t in range(epochs):
+            samples = random.sample(comments, batch_size)
+            best_arm = select_best_arm(t)
+            counts[best_arm] += 1
+            best_filter = filters[best_arm]
+
+            comments_copy = [comment.copy() for comment in samples]
+
+            comments_copy = best_filter.predict_comments_consistently(comments_copy, best_filter.attributes['predictions'])
+
+            # cache the predictions in the filter attributes
+            for comment in comments_copy:
+                best_filter.attributes['predictions'][comment['id']] = {
+                    'prediction': comment['prediction'],
+                    'groundtruth': comment['groundtruth'],
+                    'confidence': comment['confidence'],
+                }
+            performance = utils.eval_performance(comments_copy, print_comments=False, weighted=False)
+            values[best_arm] += performance['f1'] / counts[best_arm]
+
+            actual_best_arm = np.argmax(values)
+            records.append({
+                'round': t,
+                'actual_best_arm': actual_best_arm,
+                'count': counts[actual_best_arm],
+            })
+        # return the top N best filters
+        best_arms = np.argsort(values)[::-1]
+        if topN is not None:
+            best_arms = best_arms[:topN]
+        best_filters = [filters[arm] for arm in best_arms]
+        logger.info(f"Best arm selected as {best_arms[0]} with the highest value of {values[best_arms[0]]}.")
+        return best_filters
+
+    def __overall_select_best_filters(self, filters, comments, topN=None, threshold=None):
+        logger.info(f"Running overall strategy with {len(filters)} filters to select the top {topN} on {len(comments)} comments.")
+        for index, filter in enumerate(filters):
+            comments_copy = [comment.copy() for comment in comments]
+            comments_copy = filter.predict_comments_consistently(comments_copy, filter.attributes['predictions'])
+            # we want to save the predictions in the filter attributes
+            # so that we can use them when this filter is accepted.
+            filter.attributes['predictions'] = {
+                comment['id']: {
+                    'prediction': comment['prediction'],
+                    'groundtruth': comment['groundtruth'],
+                    'confidence': comment['confidence'],
+                } for comment in comments_copy
+            }
+            performance = utils.eval_performance(comments_copy, print_comments=False, weighted=False)
+            filter.attributes['performance'] = performance
+            logger.info(f'Filter {index}: Accuracy {performance["accuracy"]}, F1 {performance["f1"]}, Precision {performance["precision"]}, Recall {performance["recall"]}')
+            
+        
+        logger.info('#' * 100)
+        if topN is not None:
+            # we want to select the top N best filters based on the performance on the comments
+            best_filters = sorted(
+                filters,
+                key=lambda x: x.attributes['performance']['f1'],
+                reverse=True
+            )[:topN]
+        elif threshold is not None:
+            # we want to select the filters that have performance above the threshold
+            best_filters = [
+                filter for filter in filters if filter.attributes['performance']['accuracy'] >= threshold
+            ]
+        else:
+            best_filters = filters
+
+        # mistakes made by the old filter
+        mistake_comments = [comment for comment in comments if comment['groundtruth'] != comment['prediction']]
+        correct_comments = [comment for comment in comments if comment['groundtruth'] == comment['prediction']]
+        # we add some statistics to help users evaluate each filter
+        for filter in best_filters:
+            predictions = filter.attributes['predictions']
+            filter.attributes['fixedMistakes'] = len([
+                mistake for mistake in mistake_comments if mistake['id'] in predictions and 
+                mistake['groundtruth'] == predictions[mistake['id']]['prediction']
+            ])
+            filter.attributes['newMistakes'] = len([
+                correct for correct in correct_comments if correct['id'] in predictions and
+                correct['groundtruth'] != predictions[correct['id']]['prediction']
+            ])
+
+        return best_filters
+
+    def select_best_filters(self, filters, old_filter, comments, strategy='bandit', topN=None, **kwargs):
         """
         Select the best filter based on the performance on the comments.
 
-        @param filters: a list of filters to select from, eahc should be an instance of PromptFilterBackend
+        @param filters: a list of filters to select from, each should be an instance of PromptFilterBackend
         @param comments: a list of comments of the type dict, with the key content and groundtruth
         @param strategy: the strategy to select the best filters, can be 'bandit' or 'overall'
         @param topN: the number of best filters to return
@@ -1092,121 +1208,86 @@ class LLMBuddy:
         @return: a list of the best filters
         """
         logger.info('#' * 100)
-        if(len(comments) < 2 * batch_size):
+        for filter in filters:
+            if 'predictions' not in filter.attributes:
+                filter.attributes['predictions'] = {}
+            if 'kind' not in filter.attributes:
+                filter.attributes['kind'] = 'candidate'
+
+        # to prevent modifying the original filter, we deep copy it
+        old_filter = copy.deepcopy(old_filter)
+        # we want to avoid wasting resources on predictions we have already calculated.
+        old_filter.attributes['predictions'] = {
+            example['id']: {
+                'prediction': example['prediction'],
+                'groundtruth': example['groundtruth'],
+                'confidence': example['confidence'],
+            } for example in old_filter.training_examples
+        }
+        old_filter.attributes['kind'] = 'original'
+        
+        # from now on, we consider the old filter as a candidate filter
+        filters.append(old_filter)
+
+        high_weights_comments_ids = set([comment['id'] for comment in comments if comment['weight'] > 1])
+        """
+            if there are comments of higher weights, we need to at least make sure that filters have high performance on them.
+            by filtering out underperforming filters, we can save more computational resources.
+            we do not filter out the old filter as we want to make sure that our refinement does not degrate.
+
+            We use the threshold here because these comments of higher weights are usually mistakes,
+            as long as the accuracy on these comments is above 0, these filters help improve the overall performance.
+        """
+        if high_weights_comments_ids:
+            logger.info('#' * 100)
+            high_weights_comments = [comment for comment in comments if comment['id'] in high_weights_comments_ids]
+            filters = self.__overall_select_best_filters(filters, high_weights_comments, threshold=0.1)
+            logger.info(f'We have reduced the number of filters to {len(filters)} based on their performance on the high weights comments.')
+            for filter in filters:
+                filter.attributes['fixedHighWeightsMistakes'] = filter.attributes['fixedMistakes']
+                filter.attributes['newHighWeightsMistakes'] = filter.attributes['newMistakes']
+                filter.attributes['fixedMistakes'] = None
+                filter.attributes['newMistakes'] = None
+
+
+        if(len(comments) < 40):
             strategy = 'overall'
             logger.info(f'Not enough comments to run bandit strategy. Switching to overall strategy.')
 
-        high_weights_comments_ids = set([comment['id'] for comment in comments if comment['weight'] > 1])
         if strategy == 'bandit':
-            logger.info(f"Running bandit strategy with {len(filters)} filters to select the top {topN} from {len(comments)} comments.")
-            
-            records = []
-            counts = [0] * len(filters)
-            values = [0] * len(filters)
+            best_filters = self.__bandit_select_best_filters(
+                filters, comments, 
+                topN=topN,
+                epochs=kwargs.get('epochs', None),
+                batch_size=kwargs.get('batch_size', 20),
+                exploration=kwargs.get('exploration', 5)
+            )
+            """
+                this is to give an accurate statistics for users to evaluate the filters
+                since we cache the predictions in the filter attributes,
+                this will not significantly increase the computational cost.
+            """
+            best_filters = self.__overall_select_best_filters(
+                best_filters, comments, topN=None, threshold=None
+            )
 
-            def select_best_arm(t):
-                
-                for arm in range(len(filters)):
-                    # If any arm has not been pulled yet, choose it to explore
-                    if counts[arm] == 0:
-                        return arm
-                
-                ucb_scores = []
-                for arm in range(len(filters)):
-                    average_reward = values[arm]
-                    bonus = exploration * ((np.log(t) / counts[arm])) ** 0.5
-                    ucb_scores.append(average_reward + bonus)
-                best_arm = np.argmax(ucb_scores)
-                logger.info(f"Selecting the best arm for round {t} as {best_arm}.")
-                return best_arm
-
-            epochs = epochs if epochs else math.ceil(math.ceil(len(comments) / batch_size) * len(filters) * 0.4)
-            logger.info(f'\tWith {epochs} rounds, batch size {batch_size}, and exploration factor {exploration}.')
-            for t in range(epochs):
-                samples = random.sample(comments, batch_size)
-                best_arm = select_best_arm(t)
-                counts[best_arm] += 1
-                best_filter = filters[best_arm]
-
-                comments_copy = [comment.copy() for comment in samples]
-                if 'predictions' not in best_filter.attributes:
-                    best_filter.attributes['predictions'] = {}
-                comments_copy = best_filter.predict_comments_consistently(comments_copy, best_filter.attributes['predictions'])
-
-                for comment in comments_copy:
-                    best_filter.attributes['predictions'][comment['id']] = {
-                        'prediction': comment['prediction'],
-                        'groundtruth': comment['groundtruth'],
-                        'confidence': comment['confidence'],
-                    }
-                performance = utils.eval_performance(comments_copy, print_comments=False, weighted=False)
-                values[best_arm] += performance['f1'] / counts[best_arm]
-
-                actual_best_arm = np.argmax(values)
-                records.append({
-                    'round': t,
-                    'actual_best_arm': actual_best_arm,
-                    'count': counts[actual_best_arm],
-                })
-            # return the top N best filters
-            best_arms = np.argsort(values)[::-1][:topN]
-            best_filters = [filters[arm] for arm in best_arms]
-            logger.info(f"Best arm selected as {best_arms[0]} with the highest value of {values[best_arms[0]]}.")
-            return best_filters
         elif strategy == 'overall':
-            logger.info(f"Running overall strategy with {len(filters)} filters to select the top {topN}.")
-            performances = []
-            performances_high_weights = []
-            for index, new_filter in enumerate(filters):
-                comments_copy = [comment.copy() for comment in comments]
-                comments_copy = new_filter.predict_comments_consistently(comments_copy)
-                # we want to save the predictions in the filter attributes
-                # so that we can use them when this filter is accepted.
-                new_filter.attributes['predictions'] = {
-                    comment['id']: {
-                        'prediction': comment['prediction'],
-                        'groundtruth': comment['groundtruth'],
-                        'confidence': comment['confidence'],
-                    } for comment in comments_copy
-                }
-                performance = utils.eval_performance(comments_copy, print_comments=False, weighted=False)
-                performances.append(performance['f1'])
-                logger.info(f'Filter {index}: Accuracy {performance["accuracy"]}, F1 {performance["f1"]}, Precision {performance["precision"]}, Recall {performance["recall"]}')
-                
-                higher_weight_comments = [comment for comment in comments_copy if comment['id'] in high_weights_comments_ids]
-                if len(high_weights_comments_ids) > 0:
-                    perf_on_higher_weights_comments = utils.eval_performance(higher_weight_comments, print_comments=False)
-                    performances_high_weights.append(perf_on_higher_weights_comments['f1'])
-                    logger.info(f'Accuracy on higher weight comments: {perf_on_higher_weights_comments["f1"]}')
-            # return the top N best filters
-            logger.info('#' * 100)
-            if len(high_weights_comments_ids) == 0:
-                best_indices = np.argsort(performances)[::-1][:topN]
-                best_filters = [filters[i] for i in best_indices]
-                return best_filters
+            best_filters = self.__overall_select_best_filters(
+                filters, comments, 
+                topN=topN
+            )
+
+        # we try to categorize how well the filters perform on validation set
+        for filter in best_filters:
+            if filter.attributes['kind'] == 'original':
+                continue
+
+            if filter.attributes['fixedMistakes'] - filter.attributes['newMistakes'] > 0:
+                filter.attributes['kind'] = 'best'
             else:
-                # we want to first make sure that the performance on the high weights comments is not too low
-                base_perf = performances[0]
-                baseline_perf_high_weights = performances_high_weights[0]
-                best_indices = [0]
-                filters[0].attributes['kind'] = 'original'
-                for i in range(len(performances)):
-                    # we do not consider the original filter as best filters
-                    if performances_high_weights[i] > baseline_perf_high_weights:
-                        best_indices.append(i)
-                        changed_mistakes = abs(int((performances[i] - base_perf) * len(comments)))
-                        filters[i].attributes['changedMistakes'] = changed_mistakes
-                        if performances[i] > base_perf:
-                            filters[i].attributes['kind'] = 'best'
-                        else:
-                            filters[i].attributes['kind'] = 'trade-off'
-                # we further sort the best indices based on their overall performance from the highest to the lowest
-                # if there are indices before the original filter, they represent an optimal refinement of the original filter
-                # if there are only indices after the original filter, they represent a trade-off users need to make
-                # otherwise, we do not find any filter that is better than the original filter in any sense.
-                best_indices = sorted(best_indices, key=lambda x: performances[x], reverse=True)
-                best_filters = [filters[i] for i in best_indices]
-                return best_filters
+                filter.attributes['kind'] = 'trade-off'
+        
+        return best_filters
 
     def calibrate_prompt(self, filter, annotations, rounds=3):
         """
@@ -1229,8 +1310,11 @@ class LLMBuddy:
             logger.info(f'Round {round_index + 1} of calibration for the filter {filter.name}')
             mistakes = identify_mistakes(filter, round_index == 0)
             refine_clusters = self.generate_interesting_clusters(filter, mistakes)
-            refined_filters = self.refine_prompt(filter, refine_clusters, weighted=False)
-            filter = refined_filters[0]
+            refined_filters = self.refine_prompt(filter, refine_clusters, topN=1, weighted=False)
+            if len(refined_filters) == 0:
+                logger.error(f'No refined filters found for round {round_index + 1}.')
+            else:
+                filter = refined_filters[0]
         
         logger.info('$' * 150)
         logger.info(f'We finally start to add few shots to the filter')
