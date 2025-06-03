@@ -443,7 +443,7 @@ class YoutubeAPI:
                 self.__delete_comment(comment.id)
             elif new_action == CommentStatus.PUBLISHED:
                 self.__moderate_comments(comment, publish=True)
-            elif new_action == CommentStatus.HELD_FOR_REVIEW:
+            elif new_action == CommentStatus.REVIEW:
                 self.__moderate_comments(comment, publish=False)
             else:
                 raise ValueError(f'Unknown action: {new_action}')
