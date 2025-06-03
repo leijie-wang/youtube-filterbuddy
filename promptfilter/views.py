@@ -167,7 +167,8 @@ def authorize_user(request):
         if user is not None:
             # if the user has already authorized, then we will use the previous settings
             logger.info(f'The user {handle} has already been created with moderation access as {user.moderation_access}.')
-            whether_test = not user.moderation_access
+            # when we run the app locally, we fake the authentication so that we can test all actions.
+            whether_test = not user.moderation_access if not IS_LOCAL else True
     logger.info(f'We try to authorize the user {handle} with the test mode {whether_test}.')
     # for authentication without oauth
     if whether_test is True:
@@ -604,7 +605,7 @@ def save_prompt(request):
     new_filter = request_data.get('filter')
     mode = request_data.get('mode')
     start_date = request_data.get('start_date')
-
+    
     if 'id' in new_filter:
         filter = PromptFilter.objects.filter(id=new_filter['id']).first()
     else:
@@ -614,7 +615,7 @@ def save_prompt(request):
         filter.save()
     logger.info(f"Saving a filter: {filter.serialize(view=True)}")
 
-    if filter.last_run is None or filter.whether_changed(new_filter) or mode == 'all':
+    if filter.last_run is None or filter.whether_changed(new_filter):
         # if the filter has not been run before or the description has been updated
         logger.info(f"Detected changes in the filter {filter.name}")
 
@@ -632,7 +633,7 @@ def save_prompt(request):
             }, safe=False
         )
     elif 'action' in new_filter and filter.action != new_filter['action']:
-        logger.info(f"Updating the action of the filter {filter.name}")
+        logger.info(f"Updating the action of the filter {filter.name} from {filter.action} to {new_filter['action']}")
         filter.action = new_filter['action']
         filter.save()
 

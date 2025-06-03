@@ -180,12 +180,12 @@ class PromptFilter(models.Model):
             'positives': [rubric.serialize() for rubric in positive_rubrics],
             'negatives': [rubric.serialize() for rubric in negative_rubrics],
             'lastRun': self.last_run,
+            'action': self.action,
+            'channelName': self.channel.name,
         }
         if not view:
             serialized_filter['examples'] = [groundtruth.serialize() for groundtruth in groundtruths]
             serialized_filter['fewShotExamples'] = [example.serialize() for example in self.few_shot_examples.all()]
-            serialized_filter['action'] = self.action
-            serialized_filter['channel'] = self.channel.name
             serialized_filter['channelId'] = self.channel.id
             serialized_filter['replyMessage'] = self.reply_message
         

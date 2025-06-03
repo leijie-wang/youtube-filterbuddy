@@ -315,7 +315,7 @@ class YoutubeAPI:
             # this is helpful to avoid fetch all comments for a video that has been synchronized before
             # because of running multiple times
             if COMMENTS_CAP_PER_VIDEO:
-                comment_num = max(100, max_new_comments - total_new_comments)
+                comment_num = 100
             else:
                 comment_num = None
 
@@ -330,7 +330,7 @@ class YoutubeAPI:
             # if the user has just created the account, we will only fetch at most max_new_comments new comments
             # otherwise, we will not limit the number of new comments
             if user.last_sync is None or COMMENTS_CAP_PER_VIDEO:
-                comment_num = max(100, max_new_comments - total_new_comments)
+                comment_num = 100
             else:
                 comment_num = None
             new_comments = self.retrieve_comments(new_video.id, comment_num=comment_num, published_after=user.last_sync)
@@ -421,8 +421,10 @@ class YoutubeAPI:
     def execute_action_on_comment(self, comment):
         # because the final action should be affected by various filters.
         new_action = comment.determine_status()
+        
         if new_action == comment.status:
             # if the action is the same as the current status, we do not need to execute it
+            logger.debug(f'No action needed for comment {comment.id}, current status: {comment.status}, new action: {new_action}')
             return
         
         """
@@ -433,8 +435,9 @@ class YoutubeAPI:
         if self.private_youtube is None:
             if settings.DJANGO_ENV == 'production':
                 logger.info(f'No credentials provided, cannot actually execute action on comment {comment.id}')
+                return
             else:
-                logger.info(f'Fake executing action on comment {comment.id} in debug mode')
+                logger.debug(f'Fake executing comment {comment.id} for {new_action}')
         else:
             if new_action == CommentStatus.DELETED:
                 self.__delete_comment(comment.id)
@@ -445,5 +448,6 @@ class YoutubeAPI:
             else:
                 raise ValueError(f'Unknown action: {new_action}')
             
-            comment.status = new_action
-            comment.save()
+        comment.status = new_action
+        comment.save()
+            

@@ -1,4 +1,5 @@
 from datetime import datetime
+from math import log
 from django.db.models import Q
 import logging
 from .models import Comment, FilterPrediction, MistakeCluster
@@ -37,6 +38,7 @@ def update_predictions(filter, mode, now_synchronized=None, start_date=None, cac
     # update the predictions in the database and execute the corresponding action
     youtube = YoutubeAPI(filter.channel.owner.oauth_credentials)
     predictions = []
+    logger.info(f'Filter {filter.name} has {len(comments_with_preds)} comments with predictions to update.')
     for comment in comments_with_preds:
         # update the prediction in the database;
         existing_prediction = FilterPrediction.objects.filter(
@@ -74,6 +76,7 @@ def update_predictions(filter, mode, now_synchronized=None, start_date=None, cac
 
 def update_actions(filter, start_date=None):
     youtube = YoutubeAPI(filter.channel.owner.oauth_credentials)
+    # retrieve comments that have been affected by this particular filter
     predictions = FilterPrediction.objects.filter(
         filter=filter, prediction=True
     ).filter(
@@ -82,9 +85,9 @@ def update_actions(filter, start_date=None):
     if start_date is not None:
         predictions = predictions.filter(comment__posted_at__gt=start_date)
     
-    logger.info(f'Filter {filter.name} has {len(predictions)} predictions to update actions.')
+    logger.info(f'Filter {filter.name} has {len(predictions)} comments to update actions.')
     for prediction in predictions:
-        youtube.execute_action_on_prediction(prediction)
+        youtube.execute_action_on_comment(prediction.comment)
 
 
 
