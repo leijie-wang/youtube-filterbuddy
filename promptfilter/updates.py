@@ -62,7 +62,7 @@ def update_predictions(filter, mode, now_synchronized=None, start_date=None, cac
         )
         if mode not in ['initialize', 'iteration']:
             # to avoid back and forth actions in the iteration mode
-            youtube.execute_action_on_prediction(prediction)
+            youtube.execute_action_on_comment(prediction.comment)
         predictions.append(prediction.serialize())
 
     # remove all old mistake clusters for this filter

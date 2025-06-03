@@ -1,20 +1,25 @@
+from calendar import c
 import datetime
 import logging
-from math import log
-from django.utils import timezone
+import os
 
 from django.conf import settings
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
+from litellm import moderation
 
-from .models import PromptFilter, User, Channel, Video, Comment, FilterPrediction
+from .models import CommentStatus, PromptFilter, User, Channel, Video, Comment, FilterPrediction
 from . import updates
 from . import utils
 
 
 logger = logging.getLogger(__name__)
-
+"""
+    When we are testing, we do not want to fetch too many comments from a video
+    But in the actual deployment, we want to make sure that every comment is fetched.
+"""
+COMMENTS_CAP_PER_VIDEO = os.getenv("COMMENTS_CAP_PER_VIDEO", "True") == "True"
 
 class YoutubeAPI:
 
@@ -106,6 +111,12 @@ class YoutubeAPI:
         """
             Generator function that paginates over YouTube Search results,
             yielding one Video object at a time.
+
+            Args:
+                channel_id (str): The ID of the YouTube channel to retrieve videos from.
+                video_num (int, optional): The maximum number of videos to retrieve. Defaults to 5.
+                When set to None, it retrieves all videos.
+                published_after (datetime, optional): Only retrieve videos published after this date.
         """
         def _process_video(video_item):
             video_id = video_item['id']['videoId']
@@ -262,7 +273,7 @@ class YoutubeAPI:
                 return comments
             comments.append(comment)
         
-        while ('nextPageToken' in comment_response) and (len(comments) < comment_num):
+        while ('nextPageToken' in comment_response) and (comment_num is None or len(comments) < comment_num):
             comment_request = self.youtube.commentThreads().list(
                 part='snippet',
                 videoId=video_id,
@@ -303,7 +314,12 @@ class YoutubeAPI:
             # in case this video has too many comments, we will only retrive new comments after the last sync
             # this is helpful to avoid fetch all comments for a video that has been synchronized before
             # because of running multiple times
-            new_comments = self.retrieve_comments(video.id, published_after=user.last_sync)
+            if COMMENTS_CAP_PER_VIDEO:
+                comment_num = max(100, max_new_comments - total_new_comments)
+            else:
+                comment_num = None
+
+            new_comments = self.retrieve_comments(video.id, comment_num=comment_num, published_after=user.last_sync)
             logger.info(f'Fetched {len(new_comments)} new comments from existing video {video.title}')
             total_new_comments += len(new_comments)
             
@@ -311,7 +327,12 @@ class YoutubeAPI:
         new_videos_count = 0
         for new_video in self.retrieve_videos(channel.id, video_num=None, published_after=user.last_sync):
             new_videos_count += 1
-            comment_num = max(100, max_new_comments - total_new_comments)
+            # if the user has just created the account, we will only fetch at most max_new_comments new comments
+            # otherwise, we will not limit the number of new comments
+            if user.last_sync is None or COMMENTS_CAP_PER_VIDEO:
+                comment_num = max(100, max_new_comments - total_new_comments)
+            else:
+                comment_num = None
             new_comments = self.retrieve_comments(new_video.id, comment_num=comment_num, published_after=user.last_sync)
             logger.info(f'Fetched {len(new_comments)} new comments from new video {new_video.title}')
             total_new_comments += len(new_comments)
@@ -332,6 +353,10 @@ class YoutubeAPI:
         user.second_last_sync = user.last_sync
         user.last_sync = now_synchronized
         user.save()
+        return {
+            'newCommentsCount': total_new_comments,
+            'newVideosCount': new_videos_count
+        }
 
     def create_account(self, oauth=True, handle=None):
         """
@@ -367,27 +392,58 @@ class YoutubeAPI:
         #     utils.populate_filters(channel)
         return user, channel
 
-    def delete_comment(self, comment_id):
+    def __delete_comment(self, comment_id):
         # https://developers.google.com/youtube/v3/docs/comments/delete#try-it
-        if self.private_youtube is None:
-            logger.info(f'No credentials provided, cannot delete comment {comment_id}')
+        """
+            We don't want this function to be called directly.
+            Because some checks are provided in the execute_action_on_comment method.
+            This function is only called when the user has provided the credentials
+        """
+
+        request = self.private_youtube.comments().delete(
+            id=comment_id
+        )
+        response = request.execute()
+        logger.info(f'Deleting comment {comment_id}: {response}')
+        return response
+
+    
+    def __moderate_comments(self, comment, publish=False):
+        new_status = 'published' if publish else 'heldForReview'
+        request = self.private_youtube.comments().setModerationStatus(
+            id=comment.id, moderationStatus=new_status
+        )
+        response = request.execute()
+        logger.info(f'{new_status} comment {comment.id}: {response}')
+        return response
+
+
+    def execute_action_on_comment(self, comment):
+        # because the final action should be affected by various filters.
+        new_action = comment.determine_status()
+        if new_action == comment.status:
+            # if the action is the same as the current status, we do not need to execute it
             return
         
-        if settings.DJANGO_ENV == 'production':
-            request = self.private_youtube.comments().delete(
-                id=comment_id
-            )
-            response = request.execute()
-            logger.info(f'Deleting comment {comment_id}: {response}')
-            return response
-        elif settings.DJANGO_ENV == 'debug':
-            logger.info(f'Deleting comment {comment_id} in debug mode')
-            return
-
-    def execute_action_on_prediction(self, prediction):
-        filter = prediction.filter
-        if filter.action == 'delete':
-            comment = prediction.comment
-            self.delete_comment(comment.id)
-            comment.status = 'deleted'
+        """
+            When the action is different from the current status, we will execute the action.
+            In a debug mode, we will simply fake the action.
+            In a production mode, we will actually execute the action, given the user provides the credentials.
+        """
+        if self.private_youtube is None:
+            if settings.DJANGO_ENV == 'production':
+                logger.info(f'No credentials provided, cannot actually execute action on comment {comment.id}')
+            else:
+                logger.info(f'Fake executing action on comment {comment.id} in debug mode')
+        else:
+            if new_action == CommentStatus.DELETED:
+                self.__delete_comment(comment.id)
+            elif new_action == CommentStatus.PUBLISHED:
+                self.__moderate_comments(comment, publish=True)
+            elif new_action == CommentStatus.HELD_FOR_REVIEW:
+                self.__moderate_comments(comment, publish=False)
+            else:
+                raise ValueError(f'Unknown action: {new_action}')
+            
+            comment.status = new_action
             comment.save()

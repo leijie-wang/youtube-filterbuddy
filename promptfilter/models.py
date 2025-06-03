@@ -7,6 +7,7 @@ from django.db import models
 class CommentStatus:
     PUBLISHED = 'published'
     DELETED = 'deleted'
+    REVIEW = 'reviewing'
 
 
 class User(models.Model):
@@ -25,6 +26,7 @@ class Channel(models.Model):
     DEFAULT_MODERATION = [
         (CommentStatus.DELETED, 'Disallow Comments'),
         (CommentStatus.PUBLISHED, 'Approve Comments'),
+        (CommentStatus.REVIEW, 'Hold Comments for Review'),
     ]
     id = models.CharField(max_length=255, unique=True, primary_key=True)
     owner = models.OneToOneField(User, on_delete=models.CASCADE, related_name='channel')
@@ -59,9 +61,10 @@ class Video(models.Model):
 class Comment(models.Model):
     COMMENT_STATUS = [
         (CommentStatus.DELETED, 'Deleted'),
-        (CommentStatus.PUBLISHED, 'Published'),   
+        (CommentStatus.PUBLISHED, 'Published'), 
+        (CommentStatus.REVIEW, 'Under Review'),
     ]    
-    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='comments', )
+    video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name='comments')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='comments')
     content = models.TextField()
     id = models.CharField(max_length=255, unique=True, primary_key=True)
@@ -91,8 +94,13 @@ class Comment(models.Model):
             # as long as one of them is deleted, the comment is deleted
             if CommentStatus.DELETED in actions:
                 return CommentStatus.DELETED
-            else:
+            elif CommentStatus.REVIEW in actions:
+                # if any of the predictions is under review, we return under review
+                return CommentStatus.REVIEW
+            elif CommentStatus.PUBLISHED in actions:
                 return CommentStatus.PUBLISHED
+            else:
+                return self.video.channel.default_moderation
             
     def serialize(self, as_prediction=False):
         comment = {
@@ -114,7 +122,7 @@ class Comment(models.Model):
             comment['groundtruth'] = None
         return comment
 
-class Example(models.Model):
+class Example(models.Model): 
     content = models.TextField()
     groundtruth = models.BooleanField()
 
@@ -139,10 +147,11 @@ class PromptRubric(models.Model):
 
 class PromptFilter(models.Model):
     FILTER_ACTIONS = [
-        ('delete', 'Delete Comments'),
-        ('publish', 'Publish Comments'),   
+        (CommentStatus.DELETED, 'Delete Comments'),
+        (CommentStatus.PUBLISHED, 'Publish Comments'),
+        (CommentStatus.REVIEW, 'Hold Comments for Review'), 
         ('nothing', 'Do Nothing'),
-        ('reply', 'Reply to Comments'),
+        # ('reply', 'Reply to Comments'),
     ]
 
     name = models.CharField(max_length=255)

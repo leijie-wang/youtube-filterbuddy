@@ -1,9 +1,8 @@
 
 import json
 import logging
-from math import log
 import os
-import random
+
 from django.db.models import F
 from django.db.utils import OperationalError
 from django.http import JsonResponse, HttpResponseRedirect
@@ -147,8 +146,8 @@ def authorize_user(request):
 
     """
         whether test:
-            - if true, then users want to authenticate via YouTube API
-            - if false, then we will fake the authentication
+            - if false, then users want to authenticate via YouTube API, and it is okay that the user does not provide a handle. 
+            - if true, then we will fake the authentication, and the user handle is required.
             - if null, then we will use the default behavior from previous settings as the user has already logged in before.
     """
     whether_test = request_data.get('whether_test', False)
