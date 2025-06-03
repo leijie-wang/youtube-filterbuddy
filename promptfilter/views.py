@@ -153,7 +153,7 @@ def authorize_user(request):
     whether_test = request_data.get('whether_test', False)
     handle = request_data.get('handle', None)
     
-    if whether_test is not True and handle is None:
+    if whether_test is True and handle is None:
         logger.warning("We cannot authorize the user locally without a handle.")
         return JsonResponse(
             {
@@ -167,7 +167,7 @@ def authorize_user(request):
         if user is not None:
             # if the user has already authorized, then we will use the previous settings
             logger.info(f'The user {handle} has already been created with moderation access as {user.moderation_access}.')
-            # when we run the app locally, we fake the authentication so that we can test all actions.
+            # when we run the app locally, we fake the authentication so that we can test all
             whether_test = not user.moderation_access if not IS_LOCAL else True
     logger.info(f'We try to authorize the user {handle} with the test mode {whether_test}.')
     # for authentication without oauth
