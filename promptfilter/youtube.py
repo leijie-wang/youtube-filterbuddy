@@ -341,6 +341,10 @@ class YoutubeAPI:
             if user.last_sync is None and total_new_comments > max_new_comments:
                 logger.info(f'Stopped synchronizing after {max_new_comments} new comments')
                 break
+            if COMMENTS_CAP_PER_VIDEO and new_videos_count > 5:
+                # if the user has just created the account, we will only fetch at most 5 new videos
+                logger.info(f'Stopped synchronizing after {new_videos_count} new videos because we set COMMENTS_CAP_PER_VIDEO to True')
+                break
 
         logger.info(f'Found {new_videos_count} new videos for {user.username} after {user.last_sync}')
         logger.info(f'Total of {total_new_comments} new comments for {user.username}')

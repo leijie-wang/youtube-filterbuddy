@@ -614,6 +614,10 @@ def save_prompt(request):
         filter = PromptFilter(name=new_filter['name'], description=new_filter['description'], channel=channel)
         filter.save()
     logger.info(f"Saving a filter: {filter.serialize(view=True)}")
+    if mode == 'initialize':
+        # if the filter is being initialized, we need to remove its previous predictions and groundtruths if any.
+        FilterPrediction.objects.filter(filter=filter).delete()
+
 
     if filter.last_run is None or filter.whether_changed(new_filter):
         # if the filter has not been run before or the description has been updated

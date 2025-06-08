@@ -236,6 +236,7 @@ class PromptFilter(models.Model):
             Update a PromptFilter instance with new data in a serialized format.
         
         """
+        self.name = new_filter.get('name', self.name)
         self.description = new_filter.get('description', self.description)
         self.action = new_filter.get('action', self.action)
         # Helper function to process rubric updates
@@ -312,6 +313,7 @@ class PromptFilter(models.Model):
             else:
                 comments = list(comments.order_by('posted_at'))
         elif mode == 'initialize':
+            
             # we randomly sample 200 comments because users might still quickly iterate on the filter
             # and we want to avoid wasting too many API calls
             comments = list(comments.all())

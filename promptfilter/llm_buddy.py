@@ -277,6 +277,7 @@ class LLMBuddy:
                 <step2>
                     Summarize your reasoning in one sentence for the user. It should be clear and concise. 
                     In your summary, if the comemnt contains explicit phrases that are related to the prompt, you should mention them.
+                    As users do not know what 1 or 0 means, you should try to use the word "match" or "not match" to contextualize 1 and 0 respectively.
                 </step2>
             <Task>
 
@@ -499,6 +500,10 @@ class LLMBuddy:
 
     def cluster_mistakes_for_rubrics(self, rubrics, mistakes, threshold=1, min_samples=3):
         """Identify mistakes that might help improve a particular rubric"""
+        if len(mistakes) == 0:
+            logger.info('No mistakes to cluster')
+            return {}
+
         rubric_embeddings = [self.llm_client.text_embedding(rubric['rubric']) for rubric in rubrics]
         mistake_embeddings = [mistake['embedding'] for mistake in mistakes]
 
@@ -1309,6 +1314,9 @@ class LLMBuddy:
             logger.info('$' * 150)
             logger.info(f'Round {round_index + 1} of calibration for the filter {filter.name}')
             mistakes = identify_mistakes(filter, round_index == 0)
+            if len(mistakes) == 0:
+                logger.info(f'No mistakes found for round {round_index + 1}; early stopping the calibration.')
+                break
             refine_clusters = self.generate_interesting_clusters(filter, mistakes)
             refined_filters = self.refine_prompt(filter, refine_clusters, topN=1, weighted=False)
             if len(refined_filters) == 0:
