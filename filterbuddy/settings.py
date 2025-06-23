@@ -26,6 +26,7 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 OPENAI_API_KEY = env('OPENAI_API_KEY')
 DJANGO_ENV = env('DJANGO_ENV')
 FRONTEND_URL = env('FRONTEND_URL')
+UPDATES_DURATION=int(env('UPDATES_DURATION'))
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
@@ -231,7 +232,6 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BEAT_SCHEDULE = {
     'daily-sync-youtube-comments': {
         'task': 'promptfilter.tasks.sync_all_youtube_accounts',
-        'schedule': 86400.0,  # 24 hours in seconds
-        # 'schedule': 30.0,  # 1 minute for testing
+        'schedule': UPDATES_DURATION,
     },
 }
