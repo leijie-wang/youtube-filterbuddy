@@ -8,6 +8,7 @@ from .updates import update_predictions
 from .youtube import YoutubeAPI
 from .backend_filter import BackendPromptFilter
 from .llm_buddy import LLMBuddy
+from .utils import add_log
 
 @shared_task
 def update_predictions_task(filter_id, mode, start_date, cached_predictions):
@@ -123,6 +124,10 @@ def synchronize_youtube_task(username):
     youtube = YoutubeAPI(user.oauth_credentials)
     statistics = youtube.synchronize(user)
     logger.info(f"Synchronization for user {username} has been completed.")
+    add_log(
+        user, 'synchronize_youtube', 
+        f"Synchronization for user {username} has been completed with {statistics['newCommentsCount'] } new comments and {statistics['newVideosCount']} new videos.",
+    )
     return { 
         'message': 'Synchronization has been completed.',  
         'statistics': statistics

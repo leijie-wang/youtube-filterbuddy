@@ -421,7 +421,6 @@ class YoutubeAPI:
         logger.info(f'{new_status} comment {comment.id}: {response}')
         return response
 
-
     def execute_action_on_comment(self, comment):
         # because the final action should be affected by various filters.
         new_action = comment.determine_status()

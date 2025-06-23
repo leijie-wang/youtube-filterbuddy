@@ -305,7 +305,7 @@ def request_filters(request):
     for index, filter in enumerate(filters_data):
         filter['numberOfNewCaughtComments'] = numbers_of_new_comments[index]
     utils.add_log(
-        owner, 'request_filters', f"Retrieved {len(filters_data)} filters for the channel {channel.name}."
+        owner, 'request_filters', f"At the Overview Page: retrieved {len(filters_data)} filters for the channel {channel.name}."
     )
     return JsonResponse(
             {'filters': filters_data}, 
@@ -326,7 +326,7 @@ def request_comments(request):
     filter = PromptFilter.objects.filter(id=filter_id).first()
     comments = utils.retrieve_predictions(filter, whether_iterate)
     utils.add_log(
-        filter.channel.owner, 'request_comments', f"Retrieved {len(comments)} comments for the filter {filter.name}."
+        filter.channel.owner, 'request_comments', f"At the filter {filter.name} page: retrieved {len(comments)} comments."
     )
     return JsonResponse(
             {'comments': comments}, 
