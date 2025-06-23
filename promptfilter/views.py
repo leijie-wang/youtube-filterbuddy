@@ -1,4 +1,5 @@
 
+from ctypes import util
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from . import utils
 from .backend_filter import BackendPromptFilter
 from .youtube import YoutubeAPI
 from .llm_buddy import LLMBuddy
-from .models import Channel, PromptFilter, FilterPrediction, Comment, User, MistakeCluster
+from .models import Channel, PromptFilter, FilterPrediction, User, MistakeCluster, UserLog
 from .backend_filter import BackendPromptFilter
 
 
@@ -85,6 +86,9 @@ def switch_mode(request):
     user = channel.owner
     
     logger.info(f'The user {user.username} wants to switch from {current_mode} mode.')
+    utils.add_log(
+        user, 'switch_mode', f"Switching from {current_mode} mode to {'manual' if current_mode == 'auto' else 'auto'} mode."
+    )
     if current_mode == 'auto':
         user.moderation_access = False
         # reset the oauth credentials to a fake one
@@ -237,17 +241,26 @@ def synchronize_youtube(request):
     user = User.objects.filter(username=owner).first()
     
     now_time = timezone.now()
+
     if ((not forced)
         and (user.last_sync is not None)
         and (now_time - user.last_sync < timezone.timedelta(minutes=60))
-    ):
+    ):  
+        repeated_initialize_message = 'Synchronization has been initiated recently. Please wait for a few minutes.'
+        utils.add_log(
+            user, 'synchronize_youtube', repeated_initialize_message
+        )
         return JsonResponse(
             {
-                'message': 'Synchronization has been initiated recently. Please wait for a few minutes.',
+                'message': repeated_initialize_message,
                 'taskId': None,
             }, safe=False
         )
     else:
+        utils.add_log(
+            user, 'synchronize_youtube', 'Synchronization has been initiated.'
+        )
+
         task = tasks.synchronize_youtube_task.delay(user.username)
         return JsonResponse(
             {
@@ -291,6 +304,9 @@ def request_filters(request):
     filters_data = [ filter.serialize() for filter in filters]
     for index, filter in enumerate(filters_data):
         filter['numberOfNewCaughtComments'] = numbers_of_new_comments[index]
+    utils.add_log(
+        owner, 'request_filters', f"Retrieved {len(filters_data)} filters for the channel {channel.name}."
+    )
     return JsonResponse(
             {'filters': filters_data}, 
             safe=False
@@ -309,6 +325,9 @@ def request_comments(request):
     
     filter = PromptFilter.objects.filter(id=filter_id).first()
     comments = utils.retrieve_predictions(filter, whether_iterate)
+    utils.add_log(
+        filter.channel.owner, 'request_comments', f"Retrieved {len(comments)} comments for the filter {filter.name}."
+    )
     return JsonResponse(
             {'comments': comments}, 
             safe=False
@@ -359,7 +378,9 @@ def request_comment_info(request):
             # this is to make sure the reply has the same structure as the comment so that the frontend can render it
             reply_info = reply.serialize(as_prediction=True)
         comment_info['replies'].append(reply_info)
-        
+    utils.add_log(
+        prediction.filter.channel.owner, 'request_comment_info', f"Retrieved details for the comment {comment_id}."
+    )    
     return JsonResponse(
             {'commentInfo': comment_info}, 
             safe=False
@@ -401,7 +422,13 @@ def initialize_prompt(request):
     proposed_prompt = buddy.initialize_prompt(
         name, description, example
     )
-    
+
+    # retrieve the user for logging
+    channel = Channel.objects.filter(id=request.session['credentials']['myChannelId']).first()
+    user = channel.owner
+    utils.add_log(
+        user, 'initialize_prompt', f"Initialized a prompt with the name {name}, description {description}, and example {example}."
+    )
     return JsonResponse(
         {
             'prompt': proposed_prompt
@@ -425,6 +452,9 @@ def explore_prompt(request):
 
     task = tasks.select_interesting_comments_task.delay(filter.id, needed_num)
     task_id = task.id
+    utils.add_log(
+        filter.channel.owner, 'explore_prompt', f"Selected {needed_num} interesting comments for the filter {filter.name}."
+    )
     return JsonResponse(
         {   
             'taskId': task_id
@@ -440,14 +470,19 @@ def save_groundtruth(request):
     filter = request_data.get('filter')
     comments = request_data.get('comments')
 
+    filter = PromptFilter.objects.filter(id=filter['id']).first()
     for comment in comments:
-        prediction = FilterPrediction.objects.filter(filter=filter['id'], comment=comment['id']).first()
+        prediction = FilterPrediction.objects.filter(filter=filter, comment=comment['id']).first()
         if prediction is not None:
             prediction.groundtruth = comment['groundtruth']
             prediction.save()
+    
+    utils.add_log(
+        filter.channel.owner, 'save_groundtruth', f"Saved the groundtruths of {len(comments)} comments for the filter {filter.name}."
+    )
     return JsonResponse(
         {
-            'message': f"The groundtruths of the filter {filter['name']} for {len(comments)} has been successfully updated."
+            'message': f"The groundtruths of the filter {filter.name} for {len(comments)} has been successfully updated."
         }, safe=False
     )
     
@@ -502,7 +537,9 @@ def improve_prompt(request):
         task = tasks.generate_clusters_task.delay(filter.id)
         task_id = task.id
         
-    
+    utils.add_log(
+        filter.channel.owner, 'improve_prompt', f"Generate failue patterns for the filter {filter.name}."
+    )
     return JsonResponse(
         {   
             'message': f"We have started to generate clusters for the filter {filter.name}.",
@@ -527,6 +564,9 @@ def summarize_cluster(request):
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
     summary = buddy.interpret_refine_infos(backend_filter, cluster)
     
+    utils.add_log(
+        filter.channel.owner, 'summarize_cluster', f"Inspecting a failure pattern (with {len(cluster['cluster'])} comments) for the filter {filter.name}."
+    )
     return JsonResponse(
         {
             'summary': summary
@@ -548,6 +588,9 @@ def clarify_prompt(request):
         # update the reflection field of this prediction
         prediction.reflection = reflection
         prediction.save()
+        utils.add_log(
+            filter.channel.owner, 'clarify_prompt', f"Help articulate failure reasons for the comment {prediction.comment.id} of the filter {filter.name}."
+        )
         return JsonResponse(
             {
                 'followup': reflection
@@ -577,9 +620,15 @@ def refine_prompt(request):
     filter = request_data.get('filter')
     task = tasks.refine_prompt_task.delay(filter['id'], cluster)
     task_id = task.id
+
+    filter = PromptFilter.objects.filter(id=filter['id']).first()
+    utils.add_log(
+        filter.channel.owner, 'refine_prompt', f"Refining the prompt for the filter {filter.name} based on a failure pattern (with {len(cluster['cluster'])} comments)."
+    )
+
     return JsonResponse(
         {
-            'message': f"We have started to refine the prompt for the filter {filter['name']}.",
+            'message': f"We have started to refine the prompt for the filter {filter.name}.",
             'taskId': task_id
         }, safe=False
     )
@@ -591,10 +640,55 @@ def calibrate_prompt(request):
 
     task = tasks.calibrate_prompt_task.delay(filter['id'])
     task_id = task.id
+    
+    filter = PromptFilter.objects.filter(id=filter['id']).first()
+    utils.add_log(
+        filter.channel.owner, 'calibrate_prompt', f"Calibrating the prompt for the filter {filter.name}."
+    )
     return JsonResponse(
         {
-            'message': f"We have started to calibrate the prompt for the filter {filter['name']}.",
+            'message': f"We have started to calibrate the prompt for the filter {filter.name}.",
             'taskId': task_id
+        }, safe=False
+    )
+
+@user_verification_required
+def discard_changes(request):
+    logger.info("Discarding changes for the filter")
+    request_data = json.loads(request.body)
+    filter = request_data.get('filter')
+    mode = request_data.get('mode')
+
+    cached_predictions = filter.get('attributes', {}).get('predictions', None)
+
+    filter = PromptFilter.objects.filter(id=filter['id']).first()
+    if filter is None:
+        return JsonResponse(
+            {
+                'message': f"The filter {filter['name']} does not exist.",
+                'taskId': None
+            }, safe=False
+        )
+
+    utils.add_log(
+        filter.channel.owner, 'discard_changes', f"Discarding changes for the filter {filter.name} with the mode {mode}."
+    )
+    
+    # reset the filter to its last run state
+    filter.reset_filter()
+    filter.save()
+
+    # we need to reset relevant predictions as well
+    comments = filter.retrieve_update_comments(mode,  start_date=None)
+        
+    task = tasks.update_predictions_task.delay(filter.id, mode, None, cached_predictions)
+    task_id = task.id
+    return JsonResponse(
+        {
+            'message': f"The changes for the filter {filter.name} have been successfully discarded.",
+            'taskId': task_id,
+            'filter': filter.serialize(),
+            'commentsCount': len(comments)
         }, safe=False
     )
 
@@ -605,7 +699,8 @@ def save_prompt(request):
     new_filter = request_data.get('filter')
     mode = request_data.get('mode')
     start_date = request_data.get('start_date')
-    
+    forced =  request_data.get('forced', False)
+
     if 'id' in new_filter:
         filter = PromptFilter.objects.filter(id=new_filter['id']).first()
     else:
@@ -618,13 +713,27 @@ def save_prompt(request):
         # if the filter is being initialized, we need to remove its previous predictions and groundtruths if any.
         FilterPrediction.objects.filter(filter=filter).delete()
 
-
-    if filter.last_run is None or filter.whether_changed(new_filter):
+    whether_changed = filter.whether_changed(new_filter)
+    if filter.last_run is None or whether_changed or forced:
         # if the filter has not been run before or the description has been updated
-        logger.info(f"Detected changes in the filter {filter.name}")
+        if filter.last_run is None:
+            utils.add_log(
+                filter.channel.owner, 'save_prompt', f"Creating a new filter {filter.name} with description {new_filter['description']}."
+            )
+        elif whether_changed:
+            utils.add_log(
+                filter.channel.owner, 'save_prompt', f"Updating the content of the filter {filter.name} with the mode {mode} and start date {start_date} because changes were detected."
+            )
+        else:
+            utils.add_log(
+                filter.channel.owner, 'save_prompt', f"Generalizing the iteration of the filter {filter.name} with the mode {mode} and start date {start_date}."
+            )
+        
 
         filter.update_filter(new_filter)
         filter.save()
+        
+        comments = filter.retrieve_update_comments(mode, start_date)
         
         cached_predictions = new_filter.get('attributes', {}).get('predictions', None)
         task = tasks.update_predictions_task.delay(filter.id, mode, start_date, cached_predictions)
@@ -633,10 +742,15 @@ def save_prompt(request):
             {
                 'message': f"The description and the predictions of the filter {filter.name} has been successfully updated.",
                 'taskId': task_id,
-                'filter': filter.serialize()
+                'filter': filter.serialize(),
+                'commentsCount': len(comments)
             }, safe=False
         )
     elif 'action' in new_filter and filter.action != new_filter['action']:
+        utils.add_log(
+            filter.channel.owner, 'save_prompt', f"Updating the action of the filter {filter.name} from {filter.action} to {new_filter['action']}."
+        )
+
         logger.info(f"Updating the action of the filter {filter.name} from {filter.action} to {new_filter['action']}")
         filter.action = new_filter['action']
         filter.save()
@@ -665,7 +779,13 @@ def delete_prompt(request):
     request_data = json.loads(request.body)
     filter = request_data.get('filter')
     filter = PromptFilter.objects.filter(id=filter['id']).first()
+    utils.add_log(
+        filter.channel.owner, 'delete_prompt', f"Deleting the filter {filter.name}."
+    )
+
     filter.delete_prompt()
+
+
     return JsonResponse(
         {
             'message': f"The filter {filter.name} has been successfully deleted."
@@ -691,7 +811,9 @@ def explain_prediction(request):
             prediction.explanation = explanation
             prediction.save()
     
-
+    utils.add_log(
+        filter.channel.owner, 'explain_prediction', f"Explaining the prediction {prediction.prediction} for the comment {comment['id']} of the filter {filter.name}."
+    )
     return JsonResponse(
         {
             'explanation': explanation

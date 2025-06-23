@@ -1,4 +1,5 @@
 
+from hmac import new
 import random
 from venv import logger
 
@@ -21,6 +22,15 @@ class User(models.Model):
 
     def __str__(self):
         return self.username
+
+class UserLog(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='logs')
+    action = models.CharField(max_length=255)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    details = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f'Log for {self.user.username} at {self.timestamp}: {self.action}'
 
 class Channel(models.Model):
     DEFAULT_MODERATION = [
@@ -164,6 +174,7 @@ class PromptFilter(models.Model):
     action = models.CharField(max_length=10, choices=FILTER_ACTIONS, default='nothing')
     reply_message = models.TextField(blank=True)
     last_run = models.DateTimeField(blank=True, null=True)
+    old_filter = models.JSONField(default=dict, blank=True)
 
     def __str__(self):
         return f'{self.name} ({self.channel.name})'
@@ -236,6 +247,15 @@ class PromptFilter(models.Model):
             Update a PromptFilter instance with new data in a serialized format.
         
         """
+        logger.info(f'First we save the old filter for {self.name} before updating it.')
+        # keep a copy of the old filter in case the user wants to revert
+        serialized_old_filter = self.serialize(view=True)
+        # json field cannot deal with datetime objects, so we convert it to ISO format
+        # remember to convert it back when serializing
+        serialized_old_filter['lastRun'] = self.last_run.isoformat() if self.last_run else None
+        self.old_filter = serialized_old_filter
+
+        # Update basic fields
         self.name = new_filter.get('name', self.name)
         self.description = new_filter.get('description', self.description)
         self.action = new_filter.get('action', self.action)
@@ -258,7 +278,14 @@ class PromptFilter(models.Model):
 
                         updated_rubrics.append(rubric)
                     except PromptRubric.DoesNotExist:
-                        logger.warning(f'Rubric with ID {rubric_data["id"]} not found.')
+                        # sometimes the old rubric might be deleted, so we create a new one
+                        logger.info(f'Rubric with ID {rubric_data["id"]} not found.')
+                        new_rubric = PromptRubric.objects.create(
+                            rubric=rubric_text,
+                            is_positive=is_positive,
+                            filter=self
+                        )
+                        updated_rubrics.append(new_rubric)
                 else:
                     # Create new rubric
                     new_rubric = PromptRubric.objects.create(
@@ -283,6 +310,8 @@ class PromptFilter(models.Model):
             if rubric not in updated_rubrics:
                 rubric.delete()  # Delete rubrics that are no longer relevant
 
+        # delete old few_shot examples
+        self.few_shot_examples.clear()
         for few_shot_example in new_filter.get('fewShotExamples', []):
             if 'content' not in few_shot_example or 'groundtruth' not in few_shot_example:
                 logger.warning(f'Few-shot example {few_shot_example} is missing required fields.')
@@ -296,6 +325,20 @@ class PromptFilter(models.Model):
         # Save final state
         self.save()
         return self
+
+    def reset_filter(self):
+        """
+            Reset the filter to its old state.
+        """
+        if not self.old_filter:
+            logger.warning(f'Filter {self.name} has no old filter to reset to.')
+            return None
+
+        # use the update_filter method to reset the filter
+        updated_filter = self.update_filter(self.old_filter)
+        self.old_filter = {}  # Clear the old filter after resetting
+        logger.info(f'Filter {self.name} has been reset to its old state.')
+        return updated_filter
 
     def delete_prompt(self):
         # delete predictions associated with this filter

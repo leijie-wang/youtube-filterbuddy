@@ -76,7 +76,6 @@ class YoutubeAPI:
             }
         }
             
-
     def retrieve_channels(self):
         channel = self.youtube.channels().list(mine=True, part='snippet').execute()
         return channel
@@ -184,7 +183,6 @@ class YoutubeAPI:
 
             # Otherwise, move to the next page
             page_token = response['nextPageToken']
-
 
     def __retrieve_replies(self, parent_comment):
         replies = []
@@ -310,6 +308,9 @@ class YoutubeAPI:
         
         
         total_new_comments = 0
+        if COMMENTS_CAP_PER_VIDEO:
+            # we only want to fetch at most 5 existing videos if we are using COMMENTS_CAP_PER_VIDEO
+            existing_videos = existing_videos[:5]
         for video in existing_videos:
             # in case this video has too many comments, we will only retrive new comments after the last sync
             # this is helpful to avoid fetch all comments for a video that has been synchronized before
@@ -411,7 +412,6 @@ class YoutubeAPI:
         logger.info(f'Deleting comment {comment_id}: {response}')
         return response
 
-    
     def __moderate_comments(self, comment, publish=False):
         new_status = 'published' if publish else 'heldForReview'
         request = self.private_youtube.comments().setModerationStatus(

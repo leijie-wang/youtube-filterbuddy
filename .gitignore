@@ -9,3 +9,4 @@ notebooks/experiments/*
 
 **/*.ipynb
 datasets/*
+*_logs.txt

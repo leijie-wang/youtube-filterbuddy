@@ -7,6 +7,7 @@ import threading
 import logging
 import math
 import numpy as np
+import os
 import random
 import time
 
@@ -19,6 +20,7 @@ from . import updates
 from . import utils
 
 logger = logging.getLogger(__name__)
+RANDOM_PREDICTION = os.getenv('RANDOM_PREDICTION', 'False') == 'True'
 
 class LLMBuddy:
 
@@ -351,6 +353,11 @@ class LLMBuddy:
         return explanation
     
     def reflect_on_mistake(self, filter, comment):
+        if RANDOM_PREDICTION:
+            # if we are using random prediction, we will not reflect on the mistake
+            return """This comment is considered by the content creator as matching the prompt possibly because they want to catch
+                    <reason>comments that mention something in their content</reason>"""
+
         why_failed_system_prompt = """
             <Task>
                 A content creator is writing down their content moderation preference as a prompt.

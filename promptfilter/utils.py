@@ -5,7 +5,7 @@ from scipy.spatial.distance import cdist
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from datetime import timedelta
 from django.utils import timezone
-from .models import User, Channel, PromptFilter, Comment, FilterPrediction
+from .models import User, Channel, PromptFilter, UserLog, FilterPrediction
 
 
 logger = logging.getLogger(__name__)
@@ -302,3 +302,19 @@ def deduplicate_filters(filters):
             print(f"Duplicate found: Filter at index {filter_idx} is a duplicate of another filter.")
 
     return deduped_filters
+
+def add_log(user, action, details=None):
+    log = UserLog(user=user, action=action, details=details or {})
+    log.save()
+
+def inspect_logs(username):
+    user = User.objects.filter(username=username).first()
+    if not user:
+        raise ValueError(f"User {username} does not exist.")
+    
+    logs = UserLog.objects.filter(user=user).order_by('-timestamp')
+    # print out logs in a readable format to a txt file
+    with open(f"{username}_logs.txt", "w") as f:
+        for log in logs:
+            f.write(f"{log.timestamp} - {log.action}: {log.details}\n")
+    print(f"Logs for user {username} have been written to {username}_logs.txt")
