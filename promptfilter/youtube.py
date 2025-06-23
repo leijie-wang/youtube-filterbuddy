@@ -308,15 +308,16 @@ class YoutubeAPI:
         
         
         total_new_comments = 0
-        if COMMENTS_CAP_PER_VIDEO:
+        apply_restrictions = COMMENTS_CAP_PER_VIDEO or user.username == '@CNN'
+        if apply_restrictions:
             # we only want to fetch at most 5 existing videos if we are using COMMENTS_CAP_PER_VIDEO
             existing_videos = existing_videos[:5]
         for video in existing_videos:
             # in case this video has too many comments, we will only retrive new comments after the last sync
             # this is helpful to avoid fetch all comments for a video that has been synchronized before
             # because of running multiple times
-            if COMMENTS_CAP_PER_VIDEO:
-                comment_num = 100
+            if apply_restrictions:
+                comment_num = 50
             else:
                 comment_num = None
 
@@ -330,8 +331,10 @@ class YoutubeAPI:
             new_videos_count += 1
             # if the user has just created the account, we will only fetch at most max_new_comments new comments
             # otherwise, we will not limit the number of new comments
-            if user.last_sync is None or COMMENTS_CAP_PER_VIDEO:
-                comment_num = 100
+            if apply_restrictions:
+                comment_num = 50
+            elif user.last_sync is None:
+                comment_num = 200
             else:
                 comment_num = None
             new_comments = self.retrieve_comments(new_video.id, comment_num=comment_num, published_after=user.last_sync)
@@ -342,7 +345,7 @@ class YoutubeAPI:
             if user.last_sync is None and total_new_comments > max_new_comments:
                 logger.info(f'Stopped synchronizing after {max_new_comments} new comments')
                 break
-            if COMMENTS_CAP_PER_VIDEO and new_videos_count > 5:
+            if apply_restrictions and new_videos_count > 5:
                 # if the user has just created the account, we will only fetch at most 5 new videos
                 logger.info(f'Stopped synchronizing after {new_videos_count} new videos because we set COMMENTS_CAP_PER_VIDEO to True')
                 break
@@ -420,6 +423,7 @@ class YoutubeAPI:
         response = request.execute()
         logger.info(f'{new_status} comment {comment.id}: {response}')
         return response
+
 
     def execute_action_on_comment(self, comment):
         # because the final action should be affected by various filters.
