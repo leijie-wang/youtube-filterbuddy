@@ -311,13 +311,13 @@ class YoutubeAPI:
         apply_restrictions = COMMENTS_CAP_PER_VIDEO or user.username == '@CNN'
         if apply_restrictions:
             # we only want to fetch at most 5 existing videos if we are using COMMENTS_CAP_PER_VIDEO
-            existing_videos = existing_videos[:5]
+            existing_videos = existing_videos[:1]
         for video in existing_videos:
             # in case this video has too many comments, we will only retrive new comments after the last sync
             # this is helpful to avoid fetch all comments for a video that has been synchronized before
             # because of running multiple times
             if apply_restrictions:
-                comment_num = 50
+                comment_num = 1
             else:
                 comment_num = None
 
@@ -332,7 +332,7 @@ class YoutubeAPI:
             # if the user has just created the account, we will only fetch at most max_new_comments new comments
             # otherwise, we will not limit the number of new comments
             if apply_restrictions:
-                comment_num = 50
+                comment_num = 1
             elif user.last_sync is None:
                 comment_num = 200
             else:
@@ -345,7 +345,7 @@ class YoutubeAPI:
             if user.last_sync is None and total_new_comments > max_new_comments:
                 logger.info(f'Stopped synchronizing after {max_new_comments} new comments')
                 break
-            if apply_restrictions and new_videos_count > 5:
+            if apply_restrictions and new_videos_count > 2:
                 # if the user has just created the account, we will only fetch at most 5 new videos
                 logger.info(f'Stopped synchronizing after {new_videos_count} new videos because we set COMMENTS_CAP_PER_VIDEO to True')
                 break
