@@ -318,3 +318,24 @@ def inspect_logs(username):
         for log in logs:
             f.write(f"{log.timestamp} - {log.action}: {log.details}\n")
     print(f"Logs for user {username} have been written to {username}_logs.txt")
+
+
+def list_accounts():
+    accounts = User.objects.all()
+    if not accounts:
+        print("No accounts found.")
+        return
+    
+    print("Accounts:")
+    for account in accounts:
+        print(f"Username: {account.username}")
+    
+    return accounts
+
+def delete_account(username):
+    user = User.objects.filter(username=username).first()
+    if not user:
+        raise ValueError(f"User {username} does not exist.")
+    # Finally, delete the user
+    user.delete()
+    print(f"User {username} and all related data have been deleted.")
