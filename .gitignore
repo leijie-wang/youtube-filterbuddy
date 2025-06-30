@@ -10,3 +10,5 @@ notebooks/experiments/*
 **/*.ipynb
 datasets/*
 *_logs.txt
+datasets/youtube.ipynb
+datasets/youtube.ipynb
