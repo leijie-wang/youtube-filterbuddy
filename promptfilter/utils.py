@@ -320,19 +320,16 @@ def inspect_logs(username):
     print(f"Logs for user {username} have been written to {username}_logs.txt")
 
 
-def list_accounts():
-    accounts = User.objects.all()
-    if not accounts:
-        print("No accounts found.")
+def list_channels():
+    channels = Channel.objects.all()
+    if not channels:
+        print("No channels found.")
         return
-    
-    print("Accounts:")
-    for account in accounts:
-        print(f"Username: {account.username}")
-    
-    return accounts
+    print("List of channels:")
+    for channel in channels:
+        print(f"Channel ID: {channel.id}, Name: {channel.name}, Owner: {channel.owner.username}\n")
 
-def delete_account(username):
+def delete_channel(username):
     user = User.objects.filter(username=username).first()
     if not user:
         raise ValueError(f"User {username} does not exist.")

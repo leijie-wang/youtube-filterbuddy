@@ -38,7 +38,7 @@ SECRET_KEY = 'django-insecure-vsvaxkpg@#da10^j2)!6zp0n#p65*bo*^aje3h3!!z$sop9r&b
 DEBUG = True
 
 ALLOWED_HOSTS = [
-    'localhost', '127.0.0.1', '13.59.184.153', '10.0.0.119',
+    'localhost', '127.0.0.1', '13.59.184.153', '10.0.0.206',
     'youtube.filterbuddypro.com', 
     'api.youtube.filterbuddypro.com',
     'https://aa5b-2601-602-9101-a3c0-d512-ff04-1bf7-65fc.ngrok-free.app',
