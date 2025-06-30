@@ -535,7 +535,7 @@ class YoutubeAPI:
         if apply_restrictions:
             # in the initialization stage, we allow the user to fetch at most 500 new comments
             # but for later synchronizations, we will only fetch 50 new comments in total.
-            max_new_comments = 110 if user.last_sync is None else 50
+            max_new_comments = 300 if user.last_sync is None else 50
 
         comments, videos = self.retrieve_comments_directly(channel.id, comment_num=max_new_comments, published_after=user.last_sync)
         logger.info(f'Fetched {len(comments)} comments from the channel {channel.name}')
