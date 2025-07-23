@@ -145,7 +145,7 @@ class LLMBuddy:
         proposed_prompt = self.llm_client.extract_xml(response, "Prompt")
         return proposed_prompt
 
-    def select_interesting_comments(self, filter, N=5):
+    def select_interesting_comments(self, filter, N=5, exclude_self=True):
         """
             Given a new filter, we want to select some interesting commments for user annotations.
             Ideally, we want to a balanced dataset with N positive comments and N negative comments.
@@ -156,6 +156,10 @@ class LLMBuddy:
         remaining_negative_comments = []
 
         predictions = FilterPrediction.objects.filter(filter_id=filter.id, groundtruth__isnull=True).all()
+        if exclude_self and (filter.channel_id is not None):
+            # exclude comments from the filter's own content creator
+            # the filter here is a backend filter and only has a channel_id attribute.
+            predictions = predictions.exclude(comment__user__channel=filter.channel_id).all()
         predictions = [pred.serialize() for pred in predictions]
         total_predictions = len(predictions)
 

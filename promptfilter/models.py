@@ -193,6 +193,7 @@ class PromptFilter(models.Model):
             'lastRun': self.last_run,
             'action': self.action,
             'channelName': self.channel.name,
+            'author': self.channel.owner.username,
         }
         if not view:
             serialized_filter['examples'] = [groundtruth.serialize() for groundtruth in groundtruths]
