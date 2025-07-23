@@ -178,6 +178,9 @@ class LLMBuddy:
             nonlocal total_predictions
             # we will first sample comments that do not have predictions yet
             new_comments = Comment.objects.filter(video__channel_id=filter.channel_id).exclude(predictions__filter_id=filter.id).all()
+            if exclude_self and (filter.channel_id is not None):
+                # exclude comments from the filter's own content creator
+                new_comments = new_comments.exclude(user__channel=filter.channel_id).all()
             new_comments = new_comments[:batch_size]
             new_comments = [comment.serialize() for comment in new_comments]
             new_predictions = filter.predict_comments_consistently(new_comments)
