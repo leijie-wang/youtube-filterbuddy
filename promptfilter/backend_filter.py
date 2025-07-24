@@ -35,6 +35,7 @@ class BackendPromptFilter:
         self.histories = []
 
         self.channel_id = kwargs.get('channelId', None)
+        self.author = kwargs.get('author', None)
         self.attributes = {}
 
     @classmethod
@@ -52,6 +53,7 @@ class BackendPromptFilter:
             fewShotExamples=serialized_prompt_filter['fewShotExamples'],
             examples=serialized_prompt_filter['examples'],
             channelId=serialized_prompt_filter['channelId'],
+            author=serialized_prompt_filter['author'],
         )
 
     def parse_rubrics(self, rubric, id=None, examples=None):

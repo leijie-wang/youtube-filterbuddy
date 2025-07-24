@@ -156,10 +156,12 @@ class LLMBuddy:
         remaining_negative_comments = []
 
         predictions = FilterPrediction.objects.filter(filter_id=filter.id, groundtruth__isnull=True).all()
-        if exclude_self and (filter.channel_id is not None):
+        # logger.info(f'Selecting interesting comments for filter {filter.name} with {len(predictions)} predictions.')
+        if exclude_self and (filter.author is not None):
             # exclude comments from the filter's own content creator
-            # the filter here is a backend filter and only has a channel_id attribute.
-            predictions = predictions.exclude(comment__user__channel=filter.channel_id).all()
+            # logger.info(f'Excluding comments from the filter\'s own content creator: {filter.author}')
+            predictions = predictions.exclude(comment__user__username__iexact=filter.author).all()
+            # logger.info(f'After excluding comments from the filter\'s own content creator, we have {len(predictions)} predictions left.')
         predictions = [pred.serialize() for pred in predictions]
         total_predictions = len(predictions)
 
@@ -180,7 +182,7 @@ class LLMBuddy:
             new_comments = Comment.objects.filter(video__channel_id=filter.channel_id).exclude(predictions__filter_id=filter.id).all()
             if exclude_self and (filter.channel_id is not None):
                 # exclude comments from the filter's own content creator
-                new_comments = new_comments.exclude(user__channel=filter.channel_id).all()
+                new_comments = new_comments.exclude(user__username__iexact=filter.author).all()
             new_comments = new_comments[:batch_size]
             new_comments = [comment.serialize() for comment in new_comments]
             new_predictions = filter.predict_comments_consistently(new_comments)
