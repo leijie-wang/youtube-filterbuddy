@@ -607,8 +607,9 @@ class YoutubeAPI:
             account_info = self.retrieve_account()
         else:
             account_info = self.retrieve_account_with_handle(handle)
+            logger.info('Account info: %s', account_info)
             self.credentials = utils.populate_fake_credentials(account_info['channel']['id'])
-        logger.info('Account info: %s', account_info)
+        
         user, created = User.objects.update_or_create(
             username=account_info['username'],
             defaults={
