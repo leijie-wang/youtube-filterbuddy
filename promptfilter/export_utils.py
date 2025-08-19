@@ -175,6 +175,7 @@ def _parse_dt(val):
 def import_user_bundle(
     *,
     infile: Optional[str] = None,
+    bundle: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, int]:
     """
     Import a bundle produced by export_user_bundle().
@@ -188,8 +189,14 @@ def import_user_bundle(
     """
 
 
-    with open(infile, "r") as f:
-        data = json.load(f)
+    if (infile is None) == (bundle is None):
+        raise ValueError("Provide exactly one of infile=... or bundle=...")
+
+    if infile:
+        with open(infile, "r") as f:
+            data = json.load(f)
+    else:
+        data = bundle
 
     youtube = YoutubeAPI(credentials=None)
     # --- Caches & counters ---
