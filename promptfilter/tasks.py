@@ -201,23 +201,23 @@ def experiment_calibrate_prompt_task(source_filter_id):
 
     new_filters = []
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [
-            pool.submit(run_calibration, 'circle'),
-            pool.submit(run_calibration, 'square'),
-        ]
-        for f in futures:
-            serialized = f.result()
-            new_filters.append(serialized)
-        # circle_filter = copy_filter(filter, f"{filter.name} [Circle]", restart=True)
-        # circle_filter.approach = 'circle'
-        # circle_filter.save()
+        # futures = [
+        #     pool.submit(run_calibration, 'circle'),
+        #     pool.submit(run_calibration, 'square'),
+        # ]
+        # for f in futures:
+        #     serialized = f.result()
+        #     new_filters.append(serialized)
+        circle_filter = copy_filter(filter, f"{filter.name} [Circle]", restart=True)
+        circle_filter.approach = 'circle'
+        circle_filter.save()
 
-        # square_filter = copy_filter(filter, f"{filter.name} [Square]", restart=True)
-        # square_filter.approach = 'square'
-        # square_filter.save()
+        square_filter = copy_filter(filter, f"{filter.name} [Square]", restart=True)
+        square_filter.approach = 'square'
+        square_filter.save()
 
-        # new_filters = [circle_filter, square_filter]
-        # time.sleep(20)
+        new_filters = [circle_filter, square_filter]
+        time.sleep(20)
 
     return {
         'createdFilters': new_filters,
