@@ -210,11 +210,47 @@ def import_user_bundle(
     )
     user_cache: Dict[str, User] = {}
 
+
     # --- 1) Main user ---
     u = data["user"]
-    user_obj, channel_obj = youtube.create_account(oauth=False, handle=u['username'])
-    counts["users_updated"] += 1
-    counts["channels_updated"] += 1
+    user_obj, created = User.objects.update_or_create(
+        username=u["username"],
+        defaults={
+            "avatar": u.get("avatar"),
+            "whether_experiment": u.get("whether_experiment", False),
+        },
+    )
+    user_cache[user_obj.username] = user_obj
+    if created:
+        counts["users_created"] += 1
+    else:
+        counts["users_updated"] += 1
+
+    # --- 2) Channel (optional in bundle, but present in your export) ---
+    channel_obj = None
+    if data.get("channel"):
+        ch = data["channel"]
+        channel_obj, ch_created = Channel.objects.get_or_create(
+            id=ch["id"],
+            defaults={
+                "owner": user_obj,
+                "name": ch.get("name", ch["id"]),
+            },
+        )
+        # Keep things in sync if it already existed
+        updated = False
+        if channel_obj.owner_id != user_obj.username:
+            channel_obj.owner = user_obj
+            updated = True
+        nm = ch.get("name")
+        if nm and nm != channel_obj.name:
+            channel_obj.name = nm
+            updated = True
+        if updated:
+            channel_obj.save()
+            counts["channels_updated"] += 1
+        elif ch_created:
+            counts["channels_created"] += 1
 
     # --- 3) Related users (other commenters) ---
     for ru in data.get("related_users", []):
