@@ -1,5 +1,5 @@
 
-from hmac import new
+
 import random
 from venv import logger
 
@@ -19,6 +19,7 @@ class User(models.Model):
     moderation_access = models.BooleanField(default=False)
     second_last_sync = models.DateTimeField(blank=True, null=True)
     last_sync = models.DateTimeField(blank=True, null=True)
+    whether_experiment = models.BooleanField(default=False)
 
     def __str__(self):
         return self.username
@@ -51,7 +52,7 @@ class Video(models.Model):
     id = models.CharField(max_length=255, unique=True, primary_key=True)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
-    video_link = models.URLField(unique=True)
+    video_link = models.URLField(unique=False)
     thumbnail = models.URLField(blank=True, null=True)
     posted_at = models.DateTimeField()
 
@@ -123,6 +124,7 @@ class Comment(models.Model):
             'likes': self.likes,
             'dislikes': self.dislikes,
             'status': self.status,
+            'parentId': self.parent.id if self.parent else None,
             'totalReplies': self.total_replies,
             'link': f'https://www.youtube.com/watch?v={self.video.id}&t=1s&lc={self.id}',
         }
@@ -175,13 +177,16 @@ class PromptFilter(models.Model):
     reply_message = models.TextField(blank=True)
     last_run = models.DateTimeField(blank=True, null=True)
     old_filter = models.JSONField(default=dict, blank=True)
+    approach = models.CharField(max_length=50, null=True, blank=True, help_text='The approach used to create this filter. e.g., circle, square')
+    # square represents using our own optimization method
+    # circle represents using the apo optimization method
 
     def __str__(self):
         return f'{self.name} ({self.channel.name})'
     
     def serialize(self, view=False):
-        positive_rubrics = self.rubrics.filter(is_positive=True)
-        negative_rubrics = self.rubrics.filter(is_positive=False)
+        positive_rubrics = self.rubrics.filter(is_positive=True) if self.rubrics.exists() else []
+        negative_rubrics = self.rubrics.filter(is_positive=False) if self.rubrics.exists() else []
         groundtruths = self.matches.filter(groundtruth__isnull=False)
 
         serialized_filter = {
@@ -194,6 +199,7 @@ class PromptFilter(models.Model):
             'action': self.action,
             'channelName': self.channel.name,
             'author': self.channel.owner.username,
+            'approach': self.approach,
         }
         if not view:
             serialized_filter['examples'] = [groundtruth.serialize() for groundtruth in groundtruths]
@@ -459,7 +465,7 @@ class FilterPrediction(models.Model):
     groundtruth = models.BooleanField(blank=True, null=True)
     explanation = models.TextField(blank=True, null=True, help_text='Optional explanation for why the comment matched/don\'t match the filter')
     reflection = models.TextField(blank=True, null=True, help_text='Failure reasons if it is a mistake')
-
+    experiment_type = models.CharField(max_length=50, blank=True, null=True)
     # TODO: think of whether we should store the mitake reflection
     # the concern is that we need to track whether this reflection is no longer applicable because of future iterations.
 

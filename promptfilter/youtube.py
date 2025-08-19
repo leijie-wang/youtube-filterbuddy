@@ -3,16 +3,12 @@ import datetime
 import logging
 import os
 
-import comm
 from django.conf import settings
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
-from litellm import moderation
-from sympy import Q
 
 from .models import CommentStatus, PromptFilter, User, Channel, Video, Comment, FilterPrediction
-from . import updates
 from . import utils
 
 
@@ -518,7 +514,7 @@ class YoutubeAPI:
             If max_new_comments is set, stop synchronizing when the number of new comments exceeds this limit.
         """
 
-        
+        from . import updates
         now_synchronized = datetime.datetime.now()
         channel = user.channel
 

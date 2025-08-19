@@ -146,12 +146,36 @@ class BackendPromptFilter:
             """
         return filter_string
     
-    def predict_comments_consistently(self, comments, cached_predictions=None, **kwargs):
+    def predict_comments_consistently(self, comments, cached_predictions=None, rounds=5, **kwargs):
         prompt_str = self.stringify_filter(structured=False)
         # logger.info(f'We are running LLMs with debug mode: {RANDOM_PREDICTION}.')
         prompt_filter = BasicPromptFilter(prompt_str, debug=RANDOM_PREDICTION)
-        return prompt_filter.predict_comments_consistently(comments, cached_predictions=cached_predictions, rounds=5)
+        return prompt_filter.predict_comments_consistently(comments, cached_predictions=cached_predictions, rounds=rounds)
 
+
+    def cache_predictions(self, predictions):
+        """
+            Cache predictions for the filter.
+            This is used to avoid re-predicting the same comments.
+        """
+        if 'predictions' not in self.attributes:
+            self.attributes['predictions'] = {}
+        self.attributes['predictions'] = {
+            comment['id']: {
+                    'prediction': comment['prediction'],
+                    'groundtruth': comment['groundtruth'],
+                    'confidence': comment['confidence'],
+            } for comment in predictions
+        }
+
+    def clear_caches(self):
+        """
+            Clear the cached predictions for the filter.
+            This is used to avoid re-predicting the same comments.
+        """
+        if 'predictions' in self.attributes:
+            self.attributes['predictions'] = {}
+    
     def serialize(self):
         return {
             'id': self.id,

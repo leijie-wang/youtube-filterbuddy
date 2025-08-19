@@ -352,7 +352,7 @@ class BasicPromptFilter:
         predictions_across_rounds = defaultdict(list)
         results_lock = threading.Lock()  # Lock to safely update the shared predictions dictionary
 
-        logger.info(f'\nPredicting comments using majority votes with debug modes {self.debug}: {rounds} rounds x batch size {batch_size} on {len(comments)} comments')
+        logger.debug(f'\nPredicting comments using majority votes with debug modes {self.debug}: {rounds} rounds x batch size {batch_size} on {len(comments)} comments')
         def run_prediction_round(round_index):
             """Execute a single round of predictions in its own thread"""
             if randomized:
@@ -413,9 +413,10 @@ class BasicPromptFilter:
         cached_predictions = cached_predictions if cached_predictions is not None else {}
         unpredicted_comments = [comment for comment in comments if comment['id'] not in cached_predictions]
         start_time = time.time()
+        logger.info(f'Starting predictions for {len(unpredicted_comments)} unpredicted comments out of {len(comments)} total comments using majority voting.')
         predictions = self.predict_with_majority_vote(unpredicted_comments, **kwargs)
         end_time = time.time()
-        logger.info(f'Predictions for majority voting completed in {end_time - start_time:.2f} seconds.\n')
+        logger.info(f'Predictions for majority voting completed in {end_time - start_time:.2f} seconds.')
 
 
         for comment in comments:

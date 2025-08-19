@@ -14,6 +14,8 @@ import time
 
 from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN
+
+
 from .chat_completion import ChatCompletion
 from .models import FilterPrediction, Comment
 from . import updates
@@ -33,6 +35,7 @@ class LLMBuddy:
             'This comment should have been caught by some negative rubric (including the case where there lacks such a negative rubric) but was not.',
         ]
         self.debug = True
+
 
     def initialize_prompt(self, name, description, example):
         system_prompt = """
@@ -615,6 +618,9 @@ class LLMBuddy:
                 logger.info(f'[Prompt Candidate] Add a new {rubric_kind} rubric: {new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes)
                 new_filter.attributes['action'] = 'Add a new rubric'
+                if 'predictions' in new_filter.attributes:
+                    # this is a new filter so old predictions are not valid anymore
+                    new_filter.attributes['predictions'] = {}
                 new_filters[round_index].append(new_filter)
         
         
@@ -757,6 +763,9 @@ class LLMBuddy:
                 logger.info(f'\t--{new_rubric}')
                 new_filter.update_rubric(new_rubric, rubric_kind, comments=now_mistakes, old_rubric=rubric)
                 new_filter.attributes['action'] = 'Edit an existing rubric'
+                if 'predictions' in new_filter.attributes:
+                    # this is a new filter so old predictions are not valid anymore
+                    new_filter.attributes['predictions'] = {}
                 new_filters[round_index].append(new_filter)
 
         if len(mistakes) <= 10:
@@ -830,6 +839,9 @@ class LLMBuddy:
             new_filter = copy.deepcopy(filter)
             # can we add new examples to the filter?
             new_filter.few_shots = few_shots_examples
+            if 'predictions' in new_filter.attributes:
+                # this is a new filter so old predictions are not valid anymore
+                new_filter.attributes['predictions'] = {}
             new_filters.append(new_filter)
         
         # examine whether any filter has the exact same few shots
@@ -839,7 +851,7 @@ class LLMBuddy:
     def add_few_shots(self, filter, comments):
         comments_copy = [comment.copy() for comment in comments]
         new_filters = self.generate_few_shots(filter, comments_copy)
-        best_filters = self.select_best_filters(new_filters, filter, comments, topN=1)
+        best_filters = self.select_best_filters(new_filters, comments, old_filter=filter, topN=1)
 
         return best_filters[0]
 
@@ -1042,8 +1054,8 @@ class LLMBuddy:
             logger.info(f'Add new rubric response\n: {response}\n\n')
             interpretation = self.llm_client.extract_xml(response, "Explanation")
             return interpretation
-
-    def refine_prompt(self, filter, refine_clusters, topN, weighted=True):
+    
+    def expand_candidates(self, filter, refine_clusters):
         if not isinstance(refine_clusters, list):
             # when we only have one cluster (a dict), as opposed to a list of clusters
             if 'action' not in refine_clusters:
@@ -1063,8 +1075,13 @@ class LLMBuddy:
                 new_filters.extend(self.edit_rubric(filter, refine_info['rubric'], refine_info['cluster'], refine_info['kind']))
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to generate prompt candidates for the filter {filter.name}')
+        return new_filters
 
 
+    def refine_prompt(self, filter, refine_clusters, topN, weighted=True):
+    
+        new_filters = self.expand_candidates(filter, refine_clusters)
+        
         start_time = time.time()
         # TODO: determine how should we build the training dataset and how to highlight the mistakes.
 
@@ -1085,7 +1102,7 @@ class LLMBuddy:
                 training_example['weight'] = 1
 
         best_filters = self.select_best_filters(
-            new_filters, filter, filter.training_examples, topN=topN
+            new_filters, filter.training_examples, old_filter=filter, topN=topN
         )
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to select the best filter among {len(new_filters)} candidates')
@@ -1178,17 +1195,21 @@ class LLMBuddy:
             }
             performance = utils.eval_performance(comments_copy, print_comments=False, weighted=False)
             filter.attributes['performance'] = performance
-            logger.info(f'Filter {index}: Accuracy {performance["accuracy"]}, F1 {performance["f1"]}, Precision {performance["precision"]}, Recall {performance["recall"]}')
+            logger.info(f'Filter {index}: Accuracy {performance["accuracy"]}, F1 {performance["f1"]}, Precision {performance["precision"]}, Recall {performance["recall"]}\n')
             
         
         logger.info('#' * 100)
         if topN is not None:
             # we want to select the top N best filters based on the performance on the comments
+            indexed_filters = list(enumerate(filters))
             best_filters = sorted(
-                filters,
-                key=lambda x: x.attributes['performance']['f1'],
+                indexed_filters,
+                key=lambda x: x[1].attributes['performance']['f1'],
                 reverse=True
             )[:topN]
+            logger.info(f"Best filters selected: {[i for i, f in best_filters]}")
+            best_filters = [f for i, f in best_filters]
+            # print out the indices of the best filters
         elif threshold is not None:
             # we want to select the filters that have performance above the threshold
             best_filters = [
@@ -1214,7 +1235,7 @@ class LLMBuddy:
 
         return best_filters
 
-    def select_best_filters(self, filters, old_filter, comments, strategy='bandit', topN=None, **kwargs):
+    def select_best_filters(self, filters, comments, old_filter=None, strategy='bandit', topN=None, **kwargs):
         """
         Select the best filter based on the performance on the comments.
 
@@ -1235,20 +1256,21 @@ class LLMBuddy:
             if 'kind' not in filter.attributes:
                 filter.attributes['kind'] = 'candidate'
 
-        # to prevent modifying the original filter, we deep copy it
-        old_filter = copy.deepcopy(old_filter)
-        # we want to avoid wasting resources on predictions we have already calculated.
-        old_filter.attributes['predictions'] = {
-            example['id']: {
-                'prediction': example['prediction'],
-                'groundtruth': example['groundtruth'],
-                'confidence': example['confidence'],
-            } for example in old_filter.training_examples
-        }
-        old_filter.attributes['kind'] = 'original'
+        if old_filter is not None:
+            # to prevent modifying the original filter, we deep copy it
+            old_filter = copy.deepcopy(old_filter)
+            # we want to avoid wasting resources on predictions we have already calculated.
+            old_filter.attributes['predictions'] = {
+                example['id']: {
+                    'prediction': example['prediction'],
+                    'groundtruth': example['groundtruth'],
+                    'confidence': example['confidence'],
+                } for example in old_filter.training_examples
+            }
+            old_filter.attributes['kind'] = 'original'
         
-        # from now on, we consider the old filter as a candidate filter
-        filters.append(old_filter)
+            # from now on, we consider the old filter as a candidate filter
+            filters.append(old_filter)
 
         high_weights_comments_ids = set([comment['id'] for comment in comments if comment['weight'] > 1])
         """
@@ -1310,7 +1332,7 @@ class LLMBuddy:
         
         return best_filters
 
-    def calibrate_prompt(self, filter, annotations, rounds=3):
+    def calibrate_prompt(self, filter, annotations, rounds=3, beam_size=2):
         """
         Calibrate the filter by running automatic prompt optimization algorithms.
         """
@@ -1320,35 +1342,44 @@ class LLMBuddy:
         start_time = time.time()
         def identify_mistakes(now_filter, first_round=False):
             annotations_copy = [annotation.copy() for annotation in annotations]
+            
             if not first_round:
                 # we do not need to predict the comments for the first round as we save the predictions in database.
-                annotations_copy = now_filter.predict_comments_consistently(annotations_copy)
+                annotations_copy = now_filter.predict_comments_consistently(annotations_copy, now_filter.attributes.get('predictions', {}))
+               
             mistakes = [annotation for annotation in annotations_copy if annotation['groundtruth'] != annotation['prediction']]
+
             return mistakes
         
+        filter_candidates = [filter]
         for round_index in range(rounds):
             logger.info('$' * 150)
             logger.info(f'Round {round_index + 1} of calibration for the filter {filter.name}')
-            mistakes = identify_mistakes(filter, round_index == 0)
-            if len(mistakes) == 0:
-                logger.info(f'No mistakes found for round {round_index + 1}; early stopping the calibration.')
+            new_filters = []
+            for now_filter in filter_candidates:
+                mistakes = identify_mistakes(now_filter, round_index == 0)
+                if len(mistakes) == 0:
+                    logger.info(f'No mistakes found for round {round_index + 1}; early stopping the calibration.')
+                    continue
+                refine_clusters = self.generate_interesting_clusters(now_filter, mistakes)
+                refine_candidates = self.expand_candidates(now_filter, refine_clusters)
+                new_filters.extend(refine_candidates)
+            if len(new_filters) == 0:
+                logger.info(f'No new filters generated for round {round_index + 1}; early stopping the calibration.')
                 break
-            refine_clusters = self.generate_interesting_clusters(filter, mistakes)
-            refined_filters = self.refine_prompt(filter, refine_clusters, topN=1, weighted=False)
-            if len(refined_filters) == 0:
-                logger.error(f'No refined filters found for round {round_index + 1}.')
-            else:
-                filter = refined_filters[0]
-        
+            logger.info(f'We have {len(new_filters)} candidates for this round of calibration.')
+            filter_candidates = self.select_best_filters(new_filters + filter_candidates, annotations, topN=beam_size)
+
+        best_filter = filter_candidates[0]
         logger.info('$' * 150)
         logger.info(f'We finally start to add few shots to the filter')
     
         # then add few shot examples
-        filter = self.add_few_shots(filter, annotations)
+        best_filter = self.add_few_shots(best_filter, annotations)
 
         end_time = time.time()
         logger.info(f'It takes {end_time - start_time} seconds to calibrate the filter {filter.name}')
-        return filter
+        return best_filter
 
     def label_groundtruth(self, now_comments, filter):
         # Current index tracker

@@ -114,6 +114,8 @@ def retrieve_predictions(filter, whether_iterate):
     if not whether_iterate:
         # if the mode is not iteration, we want to retrieve all the predictions
         predictions = FilterPrediction.objects.filter(filter=filter).order_by('-comment__posted_at')
+        # exclude predictions that belong to the test set
+        predictions = predictions.exclude(experiment_type='test')
         logger.info(f"predictions when retrieving predictions: {len(predictions)}")
     else:
         # if the mode is iteration, we want to retrieve predictions that have groundtruths
@@ -319,7 +321,6 @@ def inspect_logs(username):
             f.write(f"{log.timestamp} - {log.action}: {log.details}\n")
     print(f"Logs for user {username} have been written to {username}_logs.txt")
 
-
 def list_channels():
     channels = Channel.objects.all()
     if not channels:
@@ -336,3 +337,35 @@ def delete_channel(username):
     # Finally, delete the user
     user.delete()
     print(f"User {username} and all related data have been deleted.")
+
+def copy_filter(source_filter, new_name, restart=True):
+    new_filter = PromptFilter.objects.filter(
+        name=new_name,
+        channel=source_filter.channel
+    ).first()
+    if restart and new_filter is not None:
+        print(f"Deleting existing filter {new_filter.name} for restart.")
+        new_filter.delete()
+        new_filter = None
+    if new_filter is None:
+        new_filter = PromptFilter.objects.create(
+            name=new_name,
+            description=source_filter.description,
+            channel=source_filter.channel,
+        )
+        new_filter.save()
+        # copy predictions as well
+        predictions = source_filter.matches.all()
+        new_predictions = []
+        for prediction in predictions:
+            new_prediction = FilterPrediction(
+                filter=new_filter,
+                comment=prediction.comment,
+                prediction=prediction.prediction,
+                confidence=prediction.confidence,
+                groundtruth=prediction.groundtruth,
+                experiment_type=prediction.experiment_type
+            )
+            new_predictions.append(new_prediction)
+        FilterPrediction.objects.bulk_create(new_predictions)
+    return new_filter

@@ -1,5 +1,4 @@
 
-from ctypes import util
 import json
 import logging
 import os
@@ -38,7 +37,7 @@ def csrf_token_view(request):
     return JsonResponse({'csrfToken': token})
 
 def verify_user(request):
-    if 'credentials' in request.session and 'myChannelId' in request.session['credentials']:
+    if request.session.get('credentials', None) is not None and 'myChannelId' in request.session['credentials']:
         channel_id = request.session['credentials']['myChannelId']
         channel = Channel.objects.filter(id=channel_id).first()
         if channel:
@@ -239,9 +238,16 @@ def synchronize_youtube(request):
     owner = request_data.get('owner')
     forced = request_data.get('forced', False)
     user = User.objects.filter(username=owner).first()
-    
-    now_time = timezone.now()
+    if user.whether_experiment:
+        logger.info(f'The user {user.username} is in the experiment group; skipping synchronization.')
+        return JsonResponse(
+            {
+                'message': 'Your account is in the experiment group; synchronization is skipped.',
+                'taskId': None,
+            }, safe=False
+        )
 
+    now_time = timezone.now()
     if ((not forced)
         and (user.last_sync is not None)
         and (now_time - user.last_sync < timezone.timedelta(minutes=60))
@@ -471,6 +477,7 @@ def save_groundtruth(request):
     comments = request_data.get('comments')
 
     filter = PromptFilter.objects.filter(id=filter['id']).first()
+
     for comment in comments:
         prediction = FilterPrediction.objects.filter(filter=filter, comment=comment['id']).first()
         if prediction is not None:
@@ -860,5 +867,139 @@ def refresh_predictions(request):
         {
             'message': f"We start to calculate the predictions of the filter {filter['name']}.",
             'taskId': task.id
+        }, safe=False
+    )
+
+@user_verification_required
+def initialize_dataset(request):
+
+    request_data = json.loads(request.body)
+    participant = request_data.get('participant', None)
+    if participant is None:
+        return JsonResponse(
+            {
+                'message': 'Participant parameter is required.',
+            }, safe=False
+        )
+    
+    participant = User.objects.filter(username=participant).first()
+    if participant is None:
+        return JsonResponse(
+            {
+                'message': f'The participant {participant} does not exist.',
+            }, safe=False
+        )
+    
+    # all filters have the same set of initial comments
+    filters = PromptFilter.objects.filter(channel__owner=participant)
+    if not filters.exists():
+        return JsonResponse(
+            {
+                'message': f'The participant {participant} has no filters.',
+            }, safe=False
+        )
+
+    # check whether square filter exists
+    created_filters = None
+    square_filter = filters.filter(approach='square').first()
+    circle_filter = filters.filter(approach='circle').first()
+    if square_filter and circle_filter:
+        logger.info(f'Found square and circle filters for the participant {participant.username}.')
+        created_filters = [square_filter.serialize(), circle_filter.serialize()]
+
+    filter = filters.first()
+    predictions = filter.matches.all()
+    logger.info(f'Initializing dataset for the participant {participant.username} with {predictions.count()} predictions.')
+    
+    # check if such splits are already created; randomize their order
+    existing_train = predictions.filter(experiment_type='train').order_by("?")
+    existing_test = predictions.filter(experiment_type='test').order_by("?")
+    existing_audit = predictions.filter(experiment_type='audit').order_by("?")
+    if existing_train.count() + existing_test.count() + existing_audit.count() == predictions.count():
+        logger.info(f'The dataset for the participant {participant.username} has already been initialized with {existing_train.count()} training samples, {existing_test.count()} test samples, and {existing_audit.count()} audit samples.')
+        return JsonResponse(
+            {
+                'message': f'The dataset for the participant {participant.username} has already been initialized.',
+                'datasets': {
+                    'train': [dp.serialize() for dp in existing_train],
+                    'test': [dp.serialize() for dp in existing_test],
+                    'audit': [dp.serialize() for dp in existing_audit]
+                },
+                'filter': filter.serialize(),
+                'createdFilters': created_filters
+            }, safe=False
+        )
+
+    # split the predictions into train, test, and audit datasets
+    train_size, test_size = 20, 100
+    audit_size = predictions.count() - train_size - test_size
+    # we want to randomly sample 25 positive predictions with not full confidence and 25 negative predictions with not full confidence for the training set
+    # we then want to randomly sample 50 positive predictions and 50 negative predictions for the test set
+    # the remaining predictions will be used for the audit set
+
+    ## Train Dataset Sampling ##
+    train_low_conf_pos = list(
+        predictions.filter(prediction=True, confidence__lt=1).order_by("?")[:int(train_size * 0.4)]
+    )
+    train_high_conf_pos = list(
+        predictions.filter(prediction=True, confidence=1).order_by("?")[:int(train_size * 0.4)]
+    )
+    train_neg = list(
+        predictions.filter(prediction=False, confidence__lt=1).order_by("?")[:int(train_size * 0.2)]
+    )
+    train_set = train_low_conf_pos + train_high_conf_pos + train_neg
+    train_ids = {p.id for p in train_set}
+    logger.info(f'Training set has {len(train_low_conf_pos)} low confidence positive, {len(train_high_conf_pos)} high confidence positive, and {len(train_neg)} negative samples.')
+
+    ## Test Dataset Sampling ##
+    test_pos = list(
+        predictions.filter(prediction=True).exclude(id__in=train_ids).order_by("?")[:test_size // 2]
+    )
+    test_neg = list(
+        predictions.filter(prediction=False).exclude(id__in=train_ids).order_by("?")[:test_size // 2]
+    )
+    test_set = test_pos + test_neg
+    used_ids = train_ids | {p.id for p in test_set}
+    logger.info(f'Test set has {len(test_pos)} positive and {len(test_neg)} negative samples.')
+
+    # --- AUDIT: everything else ---
+    audit_set = list(predictions.exclude(id__in=used_ids))
+    logger.info(f'Audit set has {len(audit_set)} samples.')
+
+    # tag experiment_type
+    for p in train_set: p.experiment_type = "train"
+    for p in test_set:  p.experiment_type = "test"
+    for p in audit_set: p.experiment_type = "audit"
+
+    FilterPrediction.objects.bulk_update(train_set + test_set + audit_set, ["experiment_type"])
+
+    
+    # return splits
+    return JsonResponse(
+        {
+            'message': f'The dataset for the participant {participant.username} has been successfully initialized.',
+            'datasets': {
+                'train': [dp.serialize() for dp in train_set],
+                'test': [dp.serialize() for dp in test_set],
+                'audit': [dp.serialize() for dp in audit_set]
+            },
+            'filter': filter.serialize(),
+            'createdFilters': created_filters
+        }, safe=False
+    )
+
+@user_verification_required
+def experiment_calibrate_prompt(request):
+    request_data = json.loads(request.body)
+    filter = request_data.get('filter')
+
+    # run the calibration task on the new filter
+    task = tasks.experiment_calibrate_prompt_task.delay(filter['id'])
+    task_id = task.id
+    
+    return JsonResponse(
+        {
+            'message': f"We have started to calibrate the prompt for the filter {filter['name']} in the experiment.",
+            'taskId': task_id
         }, safe=False
     )

@@ -10,24 +10,26 @@ class ChatCompletion:
     def __init__(self):
         self.llm_client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
-    def chat_completion(self, system_prompt, user_prompt, type="json_object"):
-        response = self.llm_client.chat.completions.create(
-            model="gpt-4-1106-preview",
-            response_format={"type": type},
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                }
+    def chat_completion(self, system_prompt, user_prompt, type="json_object", n=1):
+        kwargs = {
+            "model": "gpt-4-1106-preview",
+            "response_format": {"type": type},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
-        )
-        answer = response.choices[0].message.content
-    
-        return answer
+        }
+        if isinstance(n, int) and n > 1:
+            kwargs["n"] = n
+
+        response = self.llm_client.chat.completions.create(**kwargs)
+
+        if isinstance(n, int) and n > 1:
+            # collect all completions
+            return [choice.message.content for choice in response.choices]
+
+        # original behavior
+        return response.choices[0].message.content
 
     def text_embedding(self, text):
         retries = 0

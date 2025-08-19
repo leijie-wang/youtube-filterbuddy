@@ -51,4 +51,7 @@ urlpatterns = [
 
     path('prompt/explain/', promptviews.explain_prediction),
     path('prompt/revert/', promptviews.revert_prediction),
+
+    path('experiment/initialize_dataset/', promptviews.initialize_dataset),
+    path('experiment/calibrate_prompt/', promptviews.experiment_calibrate_prompt),
 ]

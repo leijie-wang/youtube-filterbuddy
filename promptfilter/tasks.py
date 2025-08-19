@@ -8,7 +8,8 @@ from .updates import update_predictions
 from .youtube import YoutubeAPI
 from .backend_filter import BackendPromptFilter
 from .llm_buddy import LLMBuddy
-from .utils import add_log
+from .utils import add_log, copy_filter
+import time
 
 @shared_task
 def update_predictions_task(filter_id, mode, start_date, cached_predictions):
@@ -154,3 +155,70 @@ def refine_prompt_task(filter_id, cluster):
     refined_filters = buddy.refine_prompt(backend_filter, cluster, topN=3)
     logger.info(f"Refined prompt for filter {filter.name} has been completed.")
     return { 'refinedFilters': [filter.serialize() for filter in refined_filters] }
+
+@shared_task
+def experiment_calibrate_prompt_task(source_filter_id):
+    from concurrent.futures import ThreadPoolExecutor
+    filter = PromptFilter.objects.filter(id=source_filter_id).first()
+    # check the calibrated filters already exist
+    created_filters = PromptFilter.objects.filter(
+        channel=filter.channel,
+        approach__in=['circle', 'square']
+    )
+    if created_filters.count() == 2:
+        logger.info(f"Found existing experiment filters for {filter.name}.")
+        return {
+            'createdFilters': [f.serialize() for f in created_filters]
+        }
+
+    def run_calibration(approach):
+        logger.info(f"Checking/Creating experiment filter: {filter.name} [{approach}]")
+        new_filter = copy_filter(filter, f"{filter.name} [{approach}]", restart=True)
+        new_filter.approach = approach
+        new_filter.save()
+
+        backend_filter = BackendPromptFilter.create_backend_filter(new_filter)
+        annotations = FilterPrediction.objects.filter(
+            filter=new_filter,
+            groundtruth__isnull=False,
+            experiment_type='train'
+        ).all()
+        annotations = [annotation.serialize() for annotation in annotations]
+        logger.info(f"Calibrating prompt in {approach} for experiment filters based on filter {new_filter.name} with {len(annotations)} annotations.")
+
+        if approach == 'circle':
+            from .optimize_prompt import PromptOptimizer
+            optimizer = PromptOptimizer()
+            calibrated_filter = optimizer.calibrate_prompt(backend_filter, annotations, rounds=3, beam_size=2)
+        else: # square
+            buddy = LLMBuddy()
+            calibrated_filter = buddy.calibrate_prompt(backend_filter, annotations, rounds=3, beam_size=2)
+
+        updated_filter = new_filter.update_filter(calibrated_filter.serialize())
+        # apply the updated filter to all comments
+        update_predictions(updated_filter, 'all')
+        return updated_filter.serialize()
+
+    new_filters = []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(run_calibration, 'circle'),
+            pool.submit(run_calibration, 'square'),
+        ]
+        for f in futures:
+            serialized = f.result()
+            new_filters.append(serialized)
+        # circle_filter = copy_filter(filter, f"{filter.name} [Circle]", restart=True)
+        # circle_filter.approach = 'circle'
+        # circle_filter.save()
+
+        # square_filter = copy_filter(filter, f"{filter.name} [Square]", restart=True)
+        # square_filter.approach = 'square'
+        # square_filter.save()
+
+        # new_filters = [circle_filter, square_filter]
+        # time.sleep(20)
+
+    return {
+        'createdFilters': new_filters,
+    }
