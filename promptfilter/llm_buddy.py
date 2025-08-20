@@ -1056,13 +1056,7 @@ class LLMBuddy:
             return interpretation
     
     def expand_candidates(self, filter, refine_clusters):
-        if not isinstance(refine_clusters, list):
-            # when we only have one cluster (a dict), as opposed to a list of clusters
-            if 'action' not in refine_clusters:
-                # we need to generate clusters that correspond to various actions to refine the prompt
-                refine_clusters = self.generate_interesting_clusters(filter, refine_clusters['cluster'])
-            else:
-                refine_clusters = [refine_clusters]
+
         
         start_time = time.time()
         # we add filter to the new filters to ensure that the performance does not drop
@@ -1079,7 +1073,13 @@ class LLMBuddy:
 
 
     def refine_prompt(self, filter, refine_clusters, topN, weighted=True):
-    
+        if not isinstance(refine_clusters, list):
+            # when we only have one cluster (a dict), as opposed to a list of clusters
+            if 'action' not in refine_clusters:
+                # we need to generate clusters that correspond to various actions to refine the prompt
+                refine_clusters = self.generate_interesting_clusters(filter, refine_clusters['cluster'])
+            else:
+                refine_clusters = [refine_clusters]
         new_filters = self.expand_candidates(filter, refine_clusters)
         
         start_time = time.time()
