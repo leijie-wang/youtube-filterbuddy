@@ -5,6 +5,7 @@ from venv import logger
 
 from django.db import models
 
+
 class CommentStatus:
     PUBLISHED = 'published'
     DELETED = 'deleted'
@@ -114,6 +115,10 @@ class Comment(models.Model):
                 return self.video.channel.default_moderation
             
     def serialize(self, as_prediction=False):
+        try:
+            parentId = self.parent.id if self.parent else None
+        except:
+            parentId = None
         comment = {
             'id': self.id,
             'content': self.content,
@@ -124,7 +129,7 @@ class Comment(models.Model):
             'likes': self.likes,
             'dislikes': self.dislikes,
             'status': self.status,
-            'parentId': self.parent.id if self.parent else None,
+            'parentId': parentId,
             'totalReplies': self.total_replies,
             'link': f'https://www.youtube.com/watch?v={self.video.id}&t=1s&lc={self.id}',
         }
@@ -170,7 +175,7 @@ class PromptFilter(models.Model):
     description = models.TextField()
 
     # examples = models.ManyToManyField('Example', blank=True, related_name='filters')
-    few_shot_examples = models.ManyToManyField('Example', blank=True, related_name='filters')
+    few_shot_examples = models.ManyToManyField(Example, blank=True, related_name='filters')
 
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='filters')
     action = models.CharField(max_length=10, choices=FILTER_ACTIONS, default='nothing')
@@ -185,8 +190,8 @@ class PromptFilter(models.Model):
         return f'{self.name} ({self.channel.name})'
     
     def serialize(self, view=False):
-        positive_rubrics = self.rubrics.filter(is_positive=True) if self.rubrics.exists() else []
-        negative_rubrics = self.rubrics.filter(is_positive=False) if self.rubrics.exists() else []
+        positive_rubrics = self.rubrics.filter(is_positive=True) if hasattr(self, 'rubrics') and self.rubrics.exists() else []
+        negative_rubrics = self.rubrics.filter(is_positive=False) if hasattr(self, 'rubrics') and self.rubrics.exists() else []
         groundtruths = self.matches.filter(groundtruth__isnull=False)
 
         serialized_filter = {

@@ -12,6 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from functools import wraps
 import google_auth_oauthlib.flow
+import random
 
 from . import tasks
 from . import updates
@@ -330,6 +331,8 @@ def request_comments(request):
         return JsonResponse({'error': 'The id of the filter is required.'}, status=400)
     
     filter = PromptFilter.objects.filter(id=filter_id).first()
+    if filter is None:
+        return JsonResponse({'error': 'The id of the filter is required.'}, status=400)
     comments = utils.retrieve_predictions(filter, whether_iterate)
     utils.add_log(
         filter.channel.owner, 'request_comments', f"At the filter {filter.name} page: retrieved {len(comments)} comments."
@@ -874,7 +877,11 @@ def refresh_predictions(request):
 def initialize_dataset(request):
 
     request_data = json.loads(request.body)
+    logger.info(f'Initializing dataset with request data: {request_data}')
     participant = request_data.get('participant', None)
+    whether_resample = request_data.get('whether_resample', False)
+    more_positives = request_data.get('more_positives', False)
+    logger.info(f'Initializing dataset for the participant {participant} with whether_resample={whether_resample}.')
     if participant is None:
         return JsonResponse(
             {
@@ -911,11 +918,12 @@ def initialize_dataset(request):
     predictions = filter.matches.all()
     logger.info(f'Initializing dataset for the participant {participant.username} with {predictions.count()} predictions.')
     
-    # check if such splits are already created; randomize their order
-    existing_train = predictions.filter(experiment_type='train').order_by("?")
-    existing_test = predictions.filter(experiment_type='test').order_by("?")
-    existing_audit = predictions.filter(experiment_type='audit').order_by("?")
-    if existing_train.count() + existing_test.count() + existing_audit.count() == predictions.count():
+    if not whether_resample:
+        # check if such splits are already created
+        existing_train = predictions.filter(experiment_type='train')
+        existing_test = predictions.filter(experiment_type='test')
+        existing_audit = predictions.filter(experiment_type='audit')
+
         logger.info(f'The dataset for the participant {participant.username} has already been initialized with {existing_train.count()} training samples, {existing_test.count()} test samples, and {existing_audit.count()} audit samples.')
         return JsonResponse(
             {
@@ -929,7 +937,7 @@ def initialize_dataset(request):
                 'createdFilters': created_filters
             }, safe=False
         )
-
+    logger.info(f'We resample the dataset for the participant {participant.username}.')
     # split the predictions into train, test, and audit datasets
     train_size, test_size = 20, 100
     audit_size = predictions.count() - train_size - test_size
@@ -938,32 +946,42 @@ def initialize_dataset(request):
     # the remaining predictions will be used for the audit set
 
     ## Train Dataset Sampling ##
+    if more_positives:
+        low_conf_pos, high_conf_pos, neg = 0.15, 0.7, 0.15
+    else:
+        low_conf_pos, high_conf_pos, neg = 0.4, 0.4, 0.2
     train_low_conf_pos = list(
-        predictions.filter(prediction=True, confidence__lt=1).order_by("?")[:int(train_size * 0.4)]
+        predictions.filter(prediction=True, confidence__lt=1).order_by("?")[:int(train_size * low_conf_pos)]
     )
     train_high_conf_pos = list(
-        predictions.filter(prediction=True, confidence=1).order_by("?")[:int(train_size * 0.4)]
+        predictions.filter(prediction=True, confidence=1).order_by("?")[:int(train_size * high_conf_pos)]
     )
     train_neg = list(
-        predictions.filter(prediction=False, confidence__lt=1).order_by("?")[:int(train_size * 0.2)]
+        predictions.filter(prediction=False, confidence__lt=1).order_by("?")[:int(train_size * neg)]
     )
     train_set = train_low_conf_pos + train_high_conf_pos + train_neg
+    # randomly shuffle the training set
+    random.shuffle(train_set)
     train_ids = {p.id for p in train_set}
     logger.info(f'Training set has {len(train_low_conf_pos)} low confidence positive, {len(train_high_conf_pos)} high confidence positive, and {len(train_neg)} negative samples.')
 
     ## Test Dataset Sampling ##
-    test_pos = list(
-        predictions.filter(prediction=True).exclude(id__in=train_ids).order_by("?")[:test_size // 2]
-    )
+
     test_neg = list(
         predictions.filter(prediction=False).exclude(id__in=train_ids).order_by("?")[:test_size // 2]
     )
+    test_pos = list(
+        predictions.filter(prediction=True).exclude(id__in=train_ids).order_by("?")[:test_size - len(test_neg)]
+    )
     test_set = test_pos + test_neg
+    random.shuffle(test_set)
+
     used_ids = train_ids | {p.id for p in test_set}
     logger.info(f'Test set has {len(test_pos)} positive and {len(test_neg)} negative samples.')
 
     # --- AUDIT: everything else ---
     audit_set = list(predictions.exclude(id__in=used_ids))
+    random.shuffle(audit_set)
     logger.info(f'Audit set has {len(audit_set)} samples.')
 
     # tag experiment_type
@@ -991,10 +1009,11 @@ def initialize_dataset(request):
 @user_verification_required
 def experiment_calibrate_prompt(request):
     request_data = json.loads(request.body)
+    
     filter = request_data.get('filter')
-
+    whether_initialize = request_data.get('whether_initialize', False)
     # run the calibration task on the new filter
-    task = tasks.experiment_calibrate_prompt_task.delay(filter['id'])
+    task = tasks.experiment_calibrate_prompt_task.delay(filter['id'], whether_initialize)
     task_id = task.id
     
     return JsonResponse(

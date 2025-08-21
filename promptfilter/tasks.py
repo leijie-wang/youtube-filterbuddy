@@ -157,7 +157,8 @@ def refine_prompt_task(filter_id, cluster):
     return { 'refinedFilters': [filter.serialize() for filter in refined_filters] }
 
 @shared_task
-def experiment_calibrate_prompt_task(source_filter_id):
+def experiment_calibrate_prompt_task(source_filter_id, whether_initialize=False):
+    logger.info(f"Starting experiment calibration for filter ID {source_filter_id} with whether_initialize={whether_initialize}")
     from concurrent.futures import ThreadPoolExecutor
     filter = PromptFilter.objects.filter(id=source_filter_id).first()
     # check the calibrated filters already exist
@@ -166,10 +167,14 @@ def experiment_calibrate_prompt_task(source_filter_id):
         approach__in=['circle', 'square']
     )
     if created_filters.count() == 2:
-        logger.info(f"Found existing experiment filters for {filter.name}.")
-        return {
-            'createdFilters': [f.serialize() for f in created_filters]
-        }
+        if whether_initialize:
+            logger.info(f"Re-initializing experiment filters for {filter.name}.")
+            created_filters.delete()
+        else:
+            logger.info(f"Returning existing experiment filters for {filter.name}.")
+            return {
+                'createdFilters': [f.serialize() for f in created_filters]
+            }
 
     def run_calibration(approach):
         logger.info(f"Checking/Creating experiment filter: {filter.name} [{approach}]")
@@ -200,15 +205,16 @@ def experiment_calibrate_prompt_task(source_filter_id):
         return updated_filter.serialize()
 
     new_filters = []
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        # futures = [
-        #     pool.submit(run_calibration, 'circle'),
-        #     pool.submit(run_calibration, 'square'),
-        # ]
-        # for f in futures:
-        #     serialized = f.result()
-        #     new_filters.append(serialized)
-        # test
+    if whether_initialize:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(run_calibration, 'circle'),
+                pool.submit(run_calibration, 'square'),
+            ]
+            for f in futures:
+                serialized = f.result()
+                new_filters.append(serialized)
+    else:
         circle_filter = copy_filter(filter, f"{filter.name} [Circle]", restart=True)
         circle_filter.approach = 'circle'
         circle_filter.save()
