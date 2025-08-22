@@ -18,7 +18,7 @@ class PromptOptimizer:
             'n_gradients': 4,
             'gradients_per_error': 1,
             'steps_per_gradient': 1,
-            'mc_samples_per_step': 2,
+            'mc_samples_per_step': 1,
             'max_expansion_factor': 4,
             'reject_on_errors': False,
             'beam_size': 2,

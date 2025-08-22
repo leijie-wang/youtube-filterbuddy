@@ -206,14 +206,8 @@ def experiment_calibrate_prompt_task(source_filter_id, whether_initialize=False)
 
     new_filters = []
     if whether_initialize:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(run_calibration, 'circle'),
-                pool.submit(run_calibration, 'square'),
-            ]
-            for f in futures:
-                serialized = f.result()
-                new_filters.append(serialized)
+        new_filters.append(run_calibration('circle'))
+        new_filters.append(run_calibration('square'))
     else:
         circle_filter = copy_filter(filter, f"{filter.name} [Circle]", restart=True)
         circle_filter.approach = 'circle'
