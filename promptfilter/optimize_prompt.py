@@ -15,10 +15,10 @@ class PromptOptimizer:
         self.opt = {
             'minibatch_size': 20,
             'errors_per_gradient': 4,
-            'n_gradients': 4,
+            'n_gradients': 2,
             'gradients_per_error': 1,
             'steps_per_gradient': 1,
-            'mc_samples_per_step': 1,
+            'mc_samples_per_step': 2,
             'max_expansion_factor': 4,
             'reject_on_errors': False,
             'beam_size': 2,
@@ -151,6 +151,7 @@ class PromptOptimizer:
             # _, texts, labels, preds = task.evaluate(gpt4, prompt, minibatch)
             train_exs_copy = [ex.copy() for ex in train_exs]
             train_exs_copy = prompt.predict_comments_consistently(minibatch, prompt.attributes.get('predictions', {}))
+            logger.info(f'There are {sum([1 for ex in train_exs_copy if ex["groundtruth"] != ex["prediction"]])} errors out of {len(train_exs_copy)} examples in the minibatch.')
             prompt.cache_predictions(train_exs_copy)
             texts = [ex['content'] for ex in train_exs_copy]
             labels = [ex['groundtruth'] for ex in train_exs_copy]
@@ -211,7 +212,8 @@ class PromptOptimizer:
             (getattr(o, "description", None) or "").strip().lower(): o
             for o in reversed(new_prompts)  # reverse to keep the last one
         }.values())[::-1]
-
+        for index, prompt in enumerate(deduped):
+            logger.info(f'Candidate {index}:\n{prompt.stringify_filter()}')
         return deduped
 
     def calibrate_prompt(self, filter, train_exs, rounds=3, beam_size=2):

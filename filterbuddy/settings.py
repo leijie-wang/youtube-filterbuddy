@@ -179,10 +179,10 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'detailed',
         },
-        "celery_file": {
-            "class": "logging.FileHandler",
-            "filename": "/var/log/celery/tasks.log",
-        },
+        # "celery_file": {
+        #     "class": "logging.FileHandler",
+        #     "filename": "/var/log/celery/tasks.log",
+        # },
     },
     'formatters': {
         'detailed': {
@@ -196,7 +196,7 @@ LOGGING = {
     },
     'loggers': {
         "celery": {
-            "handlers": ["console", "celery_file"],
+            "handlers": ["console"],
             "level": "INFO",
             "propagate": False,
         },
@@ -238,8 +238,8 @@ CELERY_BROKER_URL = 'amqp://guest:guest@localhost'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'  # Redis backend URL
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 # Celery picks up any setting with the CELERY_ prefix.
-CELERY_TASK_TIME_LIMIT = 900          # hard limit in seconds (kills the task)
-CELERY_TASK_SOFT_TIME_LIMIT = 840     # soft limit in seconds (raises SoftTimeLimitExceeded)
+CELERY_TASK_TIME_LIMIT = 1200          # hard limit in seconds (kills the task)
+CELERY_TASK_SOFT_TIME_LIMIT = 1150     # soft limit in seconds (raises SoftTimeLimitExceeded)
 
 CELERY_BEAT_SCHEDULE = {
     'daily-sync-youtube-comments': {
