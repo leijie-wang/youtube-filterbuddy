@@ -923,20 +923,21 @@ def initialize_dataset(request):
         existing_train = predictions.filter(experiment_type='train')
         existing_test = predictions.filter(experiment_type='test')
         existing_audit = predictions.filter(experiment_type='audit')
-
-        logger.info(f'The dataset for the participant {participant.username} has already been initialized with {existing_train.count()} training samples, {existing_test.count()} test samples, and {existing_audit.count()} audit samples.')
-        return JsonResponse(
-            {
-                'message': f'The dataset for the participant {participant.username} has already been initialized.',
-                'datasets': {
-                    'train': [dp.serialize() for dp in existing_train],
-                    'test': [dp.serialize() for dp in existing_test],
-                    'audit': [dp.serialize() for dp in existing_audit]
-                },
-                'filter': filter.serialize(),
-                'createdFilters': created_filters
-            }, safe=False
-        )
+        if existing_train.count() > 0 or existing_test.count() > 0 or existing_audit.count() > 0:
+            # if there are already splits, we do not need to resample
+            logger.info(f'The dataset for the participant {participant.username} has already been initialized with {existing_train.count()} training samples, {existing_test.count()} test samples, and {existing_audit.count()} audit samples.')
+            return JsonResponse(
+                {
+                    'message': f'The dataset for the participant {participant.username} has already been initialized.',
+                    'datasets': {
+                        'train': [dp.serialize() for dp in existing_train],
+                        'test': [dp.serialize() for dp in existing_test],
+                        'audit': [dp.serialize() for dp in existing_audit]
+                    },
+                    'filter': filter.serialize(),
+                    'createdFilters': created_filters
+                }, safe=False
+            )
     logger.info(f'We resample the dataset for the participant {participant.username}.')
     # split the predictions into train, test, and audit datasets
     train_size, test_size = 20, 100
