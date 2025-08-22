@@ -228,6 +228,9 @@ LOGGING = {
 CELERY_BROKER_URL = 'amqp://guest:guest@localhost'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'  # Redis backend URL
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# Celery picks up any setting with the CELERY_ prefix.
+CELERY_TASK_TIME_LIMIT = 900          # hard limit in seconds (kills the task)
+CELERY_TASK_SOFT_TIME_LIMIT = 840     # soft limit in seconds (raises SoftTimeLimitExceeded)
 
 CELERY_BEAT_SCHEDULE = {
     'daily-sync-youtube-comments': {
