@@ -179,6 +179,10 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'detailed',
         },
+        "celery_file": {
+            "class": "logging.FileHandler",
+            "filename": "/var/log/celery/tasks.log",
+        },
     },
     'formatters': {
         'detailed': {
@@ -191,6 +195,11 @@ LOGGING = {
         'level': 'INFO',
     },
     'loggers': {
+        "celery": {
+            "handlers": ["console", "celery_file"],
+            "level": "INFO",
+            "propagate": False,
+        },
         'django': {
             'handlers': ['console'],
             'level': 'INFO',
