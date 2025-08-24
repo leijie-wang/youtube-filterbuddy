@@ -378,7 +378,7 @@ def copy_filter(source_filter, new_name, restart=True, flatten=False):
                 for r in src_rubrics
             ])
         else:
-            logger.info(f"Flattening rubrics for filter {new_filter.name}.")
+            # logger.info(f"Flattening rubrics for filter {new_filter.name}.")
             from promptfilter.backend_filter import BackendPromptFilter
             source_backend_filter = BackendPromptFilter.create_backend_filter(source_filter)
             new_filter.description = source_backend_filter.stringify_filter(without_examples=True)

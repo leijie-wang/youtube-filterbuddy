@@ -165,6 +165,9 @@ def automatic_iterations_baseline_task(filter_id):
     if now_filter is None:
         logger.error(f"Filter with id {filter_id} does not exist.")
         return { 'error': f"Filter with id {filter_id} does not exist." }
+    if now_filter.calibrated is True:
+        logger.info(f"Filter {now_filter.name} is already calibrated.")
+        return { 'message': f"Filter {now_filter.name} is already calibrated.", 'iteratedFilter': now_filter.serialize() }
 
     backend_filter = BackendPromptFilter.create_backend_filter(now_filter)
     annotations = FilterPrediction.objects.filter(
@@ -178,7 +181,7 @@ def automatic_iterations_baseline_task(filter_id):
 
     from .optimize_prompt import PromptOptimizer
     optimizer = PromptOptimizer()
-    calibrated_filter = optimizer.calibrate_prompt(backend_filter, annotations, rounds=3, beam_size=2)
+    calibrated_filter = optimizer.calibrate_prompt(backend_filter, annotations, rounds=3, beam_size=1)
 
     updated_filter = now_filter.update_filter(calibrated_filter.serialize())
     # apply the updated filter to all comments

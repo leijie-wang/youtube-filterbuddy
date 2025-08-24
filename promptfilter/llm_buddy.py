@@ -1140,7 +1140,7 @@ class LLMBuddy:
                 bonus = exploration * ((np.log(t) / counts[arm])) ** 0.5
                 ucb_scores.append(average_reward + bonus)
             best_arm = np.argmax(ucb_scores)
-            logger.info(f"Selecting the best arm for round {t} as {best_arm}.")
+            logger.debug(f"Selecting the best arm for round {t} as {best_arm}.")
             return best_arm
 
         epochs = epochs if epochs else math.ceil(math.ceil(len(comments) / batch_size) * len(filters) * 0.4)

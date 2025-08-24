@@ -183,7 +183,7 @@ class PromptFilter(models.Model):
     last_run = models.DateTimeField(blank=True, null=True)
     old_filter = models.JSONField(default=dict, blank=True)
     approach = models.CharField(max_length=50, null=True, blank=True, help_text='The approach used to create this filter. e.g., circle, square')
-    calibrated = models.BooleanField(default=False, help_text='Whether this filter has been calibrated using the experiment calibration method.')
+    calibrated = models.BooleanField(blank=True, null=True, help_text='Whether this filter has been calibrated using the experiment calibration method.')
     # square represents using our own optimization method
     # circle represents using the apo optimization method
 

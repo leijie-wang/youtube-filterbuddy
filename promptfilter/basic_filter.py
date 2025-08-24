@@ -413,10 +413,10 @@ class BasicPromptFilter:
         cached_predictions = cached_predictions if cached_predictions is not None else {}
         unpredicted_comments = [comment for comment in comments if comment['id'] not in cached_predictions]
         start_time = time.time()
-        logger.info(f'Starting predictions for {len(unpredicted_comments)} unpredicted comments out of {len(comments)} total comments using majority voting.')
+        logger.debug(f'Starting predictions for {len(unpredicted_comments)} unpredicted comments out of {len(comments)} total comments using majority voting.')
         predictions = self.predict_with_majority_vote(unpredicted_comments, **kwargs)
         end_time = time.time()
-        logger.info(f'Predictions for majority voting completed in {end_time - start_time:.2f} seconds.')
+        logger.debug(f'Predictions for majority voting completed in {end_time - start_time:.2f} seconds.')
 
 
         for comment in comments:

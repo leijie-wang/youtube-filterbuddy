@@ -15,12 +15,12 @@ class PromptOptimizer:
         self.buddy = LLMBuddy()
         self.opt = {
             'minibatch_size': 32,
-            'errors_per_gradient': 4,
+            'errors_per_gradient': 8,
             'n_gradients': 2,
             'gradients_per_error': 1,
             'steps_per_gradient': 1,
-            'mc_samples_per_step': 1,
-            'max_expansion_factor': 4,
+            'mc_samples_per_step': 0,
+            'max_expansion_factor': 2,
             'reject_on_errors': False,
             'beam_size': 2,
         }
@@ -143,7 +143,7 @@ class PromptOptimizer:
         """ Expand a list of prompts by generating gradient-based successors and 
             synonyms for each section.
         """
-        minibatch = random.sample(train_exs, k=self.opt['minibatch_size'])
+        minibatch = random.sample(train_exs, k=min(self.opt['minibatch_size'], len(train_exs)))
 
         new_prompts = []
         for prompt in tqdm(prompts, desc=f'expanding {len(prompts)} prompts'):
@@ -213,8 +213,6 @@ class PromptOptimizer:
             (getattr(o, "description", None) or "").strip().lower(): o
             for o in reversed(new_prompts)  # reverse to keep the last one
         }.values())[::-1]
-        for index, prompt in enumerate(deduped):
-            logger.info(f'Candidate {index}:\n{prompt.stringify_filter()}')
         return deduped
 
     def calibrate_prompt(self, filter, train_exs, rounds=3, beam_size=2):
@@ -222,15 +220,26 @@ class PromptOptimizer:
         for train_ex in train_exs:
             train_ex['weight'] = 1
         
+        logger.info(f"""Optimize prompt with the following options:
+            We keep the top {self.opt['beam_size']} candidates across {rounds} rounds.
+            Each round, we sample {self.opt['minibatch_size']} examples from the training and get mistakes on them.
+            Then for {self.opt['n_gradients']} times, we randomly sample {self.opt['errors_per_gradient']} mistakes
+                and ask the LLMs to genereate {self.opt['gradients_per_error']} feedbacks on why the prompt could have made these mistakes.
+            Then for each feedback, we ask the LLMs to generate {self.opt['steps_per_gradient']} improved prompts.
+            Finally, we randomly choose up to {self.opt['max_expansion_factor']} candidates from all the generated prompts.
+            Together with the original {self.opt['beam_size']} candidates, 
+                we evaluate them on the training examples and keep the top {self.opt['beam_size']} candidates for the next round.
+        """)
         candidates = [filter]
-        for round in tqdm(range(rounds + 1)):
+        for round in tqdm(range(rounds), desc='calibration rounds'):
             # expand candidates
+            logger.info('=' * 150)
             start_time = time.time()
             candidates = self.expand_candidates(candidates, train_exs)
-
+            logger.info(f'Round {round + 1} of calibration: {len(candidates)} candidates after expansion using {time.time() - start_time} seconds.')
             # choose the top candidates
+            start_time = time.time()
             candidates = self.buddy.select_best_filters(candidates, train_exs, topN=self.opt['beam_size'])
-            logger.info(f'Round {round + 1} of calibration: {len(candidates)} candidates after expansion')
-            logger.info(f'It takes {time.time() - start_time} seconds to expand candidates')
+            logger.info(f'Round {round + 1} of calibration: select the top {len(candidates)} candidates after {time.time() - start_time} seconds.')
             logger.info('=' * 150)
         return candidates[0]

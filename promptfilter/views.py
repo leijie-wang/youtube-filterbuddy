@@ -1,4 +1,5 @@
 
+from code import interact
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from functools import wraps
 import google_auth_oauthlib.flow
 import random
 
+from matplotlib import interactive
 from sympy import flatten
 
 from . import tasks
@@ -897,11 +899,11 @@ def refresh_predictions(request):
 def initialize_dataset(request):
 
     request_data = json.loads(request.body)
-    logger.info(f'Initializing dataset with request data: {request_data}')
+    
     participant = request_data.get('participant', None)
     whether_resample = request_data.get('whether_resample', False)
     more_positives = request_data.get('more_positives', False)
-    logger.info(f'Initializing dataset for the participant {participant} with whether_resample={whether_resample}.')
+
     if participant is None:
         return JsonResponse(
             {
@@ -945,7 +947,6 @@ def initialize_dataset(request):
         existing_audit = predictions.filter(experiment_type='audit')
         if existing_train.count() > 0 or existing_test.count() > 0 or existing_audit.count() > 0:
             # if there are already splits, we do not need to resample
-            logger.info(f'The dataset for the participant {participant.username} has already been initialized with {existing_train.count()} training samples, {existing_test.count()} test samples, and {existing_audit.count()} audit samples.')
             return JsonResponse(
                 {
                     'message': f'The dataset for the participant {participant.username} has already been initialized.',
@@ -1029,6 +1030,8 @@ def initialize_dataset(request):
 
 @user_verification_required
 def iteration_filters(request):
+    from promptfilter.utils import copy_filter
+    from django.db import transaction
     request_data = json.loads(request.body)
     participant = request_data.get('participant', None)
     participant = User.objects.filter(username=participant).first()
@@ -1040,26 +1043,6 @@ def iteration_filters(request):
             }, safe=False
         )
     
-    # if these two iteration filters already exist, we do not create them again
-    existing_filters = PromptFilter.objects.filter(
-        channel=participant.channel, approach__in=['iteration-interactive', 'iteration-automated']
-    )
-
-    if existing_filters.count() == 2:
-        logger.info(f'The iteration filters for the participant {participant.username} already exist.')
-        automated_filter = existing_filters.filter(approach='iteration-automated').first()
-        task = None
-        if not automated_filter.calibrated:
-            # run the celery task automatic_iterations_baseline
-            task = tasks.automatic_iterations_baseline_task.delay(automated_filter.id)
-        return JsonResponse(
-            {
-                'message': f'The iteration filters for the participant {participant.username} already exist.',
-                'filters': [f.serialize() for f in existing_filters],
-                'iterateTaskId': task.id if task else None 
-            }, safe=False
-        )
-
     source_square_filter = PromptFilter.objects.filter(channel=participant.channel, approach='square').first()
     if source_square_filter is None or source_square_filter.calibrated is False:
         logger.info(f'The participant {participant.username} has not created or calibrated the source square filter yet.')
@@ -1071,30 +1054,45 @@ def iteration_filters(request):
             }, safe=False
         )
     
-    
-    from promptfilter.utils import copy_filter
-    # we copy the square filter for iteration experiments
-    logger.info(f'Creating iteration filters for the participant {participant.username} by copying the square filter {source_square_filter.name}.')
-    new_interactive_name = source_square_filter.name.replace("square", "interactive")
-    square_filter_interactive = copy_filter(source_square_filter, new_interactive_name, restart=True, flatten=False)
-    square_filter_interactive.approach = 'iteration-interactive'
-    square_filter_interactive.save()
+    # if these two iteration filters already exist, we do not create them again
+    automated_filter = PromptFilter.objects.filter(
+        channel=participant.channel, approach='iteration-automated'
+    ).first()
+    automated_calibration_task = None
+    if automated_filter is None:
+        new_automated_name = source_square_filter.name.replace("square", "automated")
+        automated_filter = copy_filter(source_square_filter, new_automated_name, restart=True, flatten=True)
+        automated_filter.approach = 'iteration-automated'
+        automated_filter.save()
 
-    new_automated_name = source_square_filter.name.replace("square", "automated")
-    square_filter_automated = copy_filter(source_square_filter, new_automated_name, restart=True, flatten=True)
-    square_filter_automated.approach = 'iteration-automated'
-    square_filter_automated.save()
-    task = None
-    if not square_filter_automated.calibrated:
-        # run the celery task automatic_iterations_baseline
-        task = tasks.automatic_iterations_baseline_task.delay(square_filter_automated.id)
-        logger.info(f'Started the automatic_iterations_baseline_task for the automated iteration filter {square_filter_automated.name}.')
+    with transaction.atomic():
+        updated = (PromptFilter.objects
+                .filter(id=automated_filter.id, calibrated__isnull=True)
+                .update(calibrated=False))
+
+        if updated:
+            def enqueue():
+                nonlocal automated_calibration_task
+                automated_calibration_task = tasks.automatic_iterations_baseline_task.delay(
+                    automated_filter.id
+                )
+            transaction.on_commit(enqueue)
+    logger.info(f'Automated calibration task id: {automated_calibration_task.id if automated_calibration_task else None}')
+
+    interactive_filter = PromptFilter.objects.filter(
+        channel=participant.channel, approach='iteration-interactive'
+    ).first()
+    if interactive_filter is None:
+        new_interactive_name = source_square_filter.name.replace("square", "interactive")
+        interactive_filter = copy_filter(source_square_filter, new_interactive_name, restart=True, flatten=False)
+        interactive_filter.approach = 'iteration-interactive'
+        interactive_filter.save()
 
     return JsonResponse(
         {
             'message': f'The iteration filters for the participant {participant.username} have been successfully created.',
-            'filters': [square_filter_interactive.serialize(), square_filter_automated.serialize()],
-            'iterateTaskId': task.id if task else None
+            'filters': [interactive_filter.serialize(), automated_filter.serialize()],
+            'iterateTaskId': automated_calibration_task.id if automated_calibration_task else None
         }, safe=False
     )
 
