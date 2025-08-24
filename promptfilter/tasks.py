@@ -220,6 +220,7 @@ def experiment_calibrate_prompt_task(source_filter_id, whether_initialize=False)
         logger.info(f"Checking/Creating experiment filter: {filter.name} [{approach}]")
         new_filter = copy_filter(filter, f"{filter.name} [{approach}]", restart=True)
         new_filter.approach = approach
+        new_filter.calibrated = False
         new_filter.save()
 
         backend_filter = BackendPromptFilter.create_backend_filter(new_filter)
