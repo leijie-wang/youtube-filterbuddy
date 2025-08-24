@@ -487,6 +487,7 @@ class FilterPrediction(models.Model):
         comment['explanation'] = self.explanation
         comment['groundtruth'] = self.groundtruth
         comment['reflection'] = self.reflection
+        comment['experimentType'] = self.experiment_type
         return comment
 
     class Meta:
