@@ -14,6 +14,8 @@ from functools import wraps
 import google_auth_oauthlib.flow
 import random
 
+from sympy import flatten
+
 from . import tasks
 from . import updates
 from . import utils
@@ -298,6 +300,7 @@ def request_filters(request):
     # Retrieve the 'owner' GET parameter
     request_data = json.loads(request.body)
     owner = request_data.get('owner')
+    filter_id = request_data.get('filter_id', None)
     owner = User.objects.filter(username=owner).first()
     if not owner:
         return JsonResponse({'error': 'Owner of the channel parameter is required'}, status=400)
@@ -307,6 +310,11 @@ def request_filters(request):
         return JsonResponse({'error': 'Channel not found'}, status=404)
     
     filters = PromptFilter.objects.filter(channel=channel)
+    if filter_id is not None:
+        filters = filters.filter(id=filter_id)
+        if len(filters) == 0:
+            return JsonResponse({'error': 'The filter with the given id does not exist.'}, status=404)
+
     numbers_of_new_comments = [utils.number_of_new_comments(filter) for filter in filters]
     filters_data = [ filter.serialize() for filter in filters]
     for index, filter in enumerate(filters_data):
@@ -333,6 +341,10 @@ def request_comments(request):
     filter = PromptFilter.objects.filter(id=filter_id).first()
     if filter is None:
         return JsonResponse({'error': 'The id of the filter is required.'}, status=400)
+    
+    # check whether this filter has any experiment comments
+    prediction = FilterPrediction.objects.filter(filter=filter, experiment_type='test').first()
+
     comments = utils.retrieve_predictions(filter, whether_iterate)
     utils.add_log(
         filter.channel.owner, 'request_comments', f"At the filter {filter.name} page: retrieved {len(comments)} comments."
@@ -486,7 +498,15 @@ def save_groundtruth(request):
         if prediction is not None:
             prediction.groundtruth = comment['groundtruth']
             prediction.save()
-    
+    if filter.channel.owner.whether_experiment:
+        # if this user is in the experiment group, we need to copy the groundtruth to other filters as well.
+        logger.info(f"The user {filter.channel.owner.username} is in the experiment group; copying the groundtruth to other filters as well.")
+        for now_prediction in filter.matches.all():
+            other_predictions = now_prediction.comment.predictions.exclude(filter=filter)
+            for other_prediction in other_predictions:
+                other_prediction.groundtruth = now_prediction.groundtruth
+                other_prediction.save()
+
     utils.add_log(
         filter.channel.owner, 'save_groundtruth', f"Saved the groundtruths of {len(comments)} comments for the filter {filter.name}."
     )
@@ -1004,6 +1024,77 @@ def initialize_dataset(request):
             },
             'filter': filter.serialize(),
             'createdFilters': created_filters
+        }, safe=False
+    )
+
+@user_verification_required
+def iteration_filters(request):
+    request_data = json.loads(request.body)
+    participant = request_data.get('participant', None)
+    participant = User.objects.filter(username=participant).first()
+    if participant is None:
+        return JsonResponse(
+            {
+                'message': 'Participant parameter is required.',
+                'filters': []
+            }, safe=False
+        )
+    
+    # if these two iteration filters already exist, we do not create them again
+    existing_filters = PromptFilter.objects.filter(
+        channel=participant.channel, approach__in=['iteration-interactive', 'iteration-automated']
+    )
+
+    if existing_filters.count() == 2:
+        logger.info(f'The iteration filters for the participant {participant.username} already exist.')
+        automated_filter = existing_filters.filter(approach='iteration-automated').first()
+        task = None
+        if not automated_filter.calibrated:
+            # run the celery task automatic_iterations_baseline
+            task = tasks.automatic_iterations_baseline_task.delay(automated_filter.id)
+        return JsonResponse(
+            {
+                'message': f'The iteration filters for the participant {participant.username} already exist.',
+                'filters': [f.serialize() for f in existing_filters],
+                'iterateTaskId': task.id if task else None 
+            }, safe=False
+        )
+
+    source_square_filter = PromptFilter.objects.filter(channel=participant.channel, approach='square').first()
+    if source_square_filter is None or source_square_filter.calibrated is False:
+        logger.info(f'The participant {participant.username} has not created or calibrated the source square filter yet.')
+        return JsonResponse(
+            {
+                'message': f'The participant {participant} has not created the source square filter yet.',
+                'filters': [],
+                'iterateTaskId': None
+            }, safe=False
+        )
+    
+    
+    from promptfilter.utils import copy_filter
+    # we copy the square filter for iteration experiments
+    logger.info(f'Creating iteration filters for the participant {participant.username} by copying the square filter {source_square_filter.name}.')
+    new_interactive_name = source_square_filter.name.replace("square", "interactive")
+    square_filter_interactive = copy_filter(source_square_filter, new_interactive_name, restart=True, flatten=False)
+    square_filter_interactive.approach = 'iteration-interactive'
+    square_filter_interactive.save()
+
+    new_automated_name = source_square_filter.name.replace("square", "automated")
+    square_filter_automated = copy_filter(source_square_filter, new_automated_name, restart=True, flatten=True)
+    square_filter_automated.approach = 'iteration-automated'
+    square_filter_automated.save()
+    task = None
+    if not square_filter_automated.calibrated:
+        # run the celery task automatic_iterations_baseline
+        task = tasks.automatic_iterations_baseline_task.delay(square_filter_automated.id)
+        logger.info(f'Started the automatic_iterations_baseline_task for the automated iteration filter {square_filter_automated.name}.')
+
+    return JsonResponse(
+        {
+            'message': f'The iteration filters for the participant {participant.username} have been successfully created.',
+            'filters': [square_filter_interactive.serialize(), square_filter_automated.serialize()],
+            'iterateTaskId': task.id if task else None
         }, safe=False
     )
 

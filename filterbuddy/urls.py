@@ -54,4 +54,5 @@ urlpatterns = [
 
     path('experiment/initialize_dataset/', promptviews.initialize_dataset),
     path('experiment/calibrate_prompt/', promptviews.experiment_calibrate_prompt),
+    path('experiment/iteration_filters/', promptviews.iteration_filters),
 ]

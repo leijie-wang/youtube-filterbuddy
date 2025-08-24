@@ -3,6 +3,7 @@ from celery import shared_task
 import math
 import random
 from django.db.models import F
+from torch import square_
 from .models import PromptFilter, User, MistakeCluster, FilterPrediction
 from .updates import update_predictions
 from .youtube import YoutubeAPI
@@ -150,11 +151,47 @@ def refine_prompt_task(filter_id, cluster):
     filter = PromptFilter.objects.filter(id=filter_id).first()
     logger.info(f"Refining prompt for filter {filter.name} with {len(cluster['cluster'])} comments.")
     backend_filter = BackendPromptFilter.create_backend_filter(filter)
+    logger.info(f'This filter has {len(backend_filter.training_examples)} training examples.')
 
     buddy = LLMBuddy()
     refined_filters = buddy.refine_prompt(backend_filter, cluster, topN=3)
     logger.info(f"Refined prompt for filter {filter.name} has been completed.")
     return { 'refinedFilters': [filter.serialize() for filter in refined_filters] }
+
+@shared_task
+def automatic_iterations_baseline_task(filter_id):
+    start_time = time.time()
+    now_filter = PromptFilter.objects.filter(id=filter_id).first()
+    if now_filter is None:
+        logger.error(f"Filter with id {filter_id} does not exist.")
+        return { 'error': f"Filter with id {filter_id} does not exist." }
+
+    backend_filter = BackendPromptFilter.create_backend_filter(now_filter)
+    annotations = FilterPrediction.objects.filter(
+        filter=now_filter,
+        groundtruth__isnull=False,
+        experiment_type__in=['train', 'audit']
+    ).all()
+
+    annotations = [annotation.serialize() for annotation in annotations]
+    logger.info(f"Automatic iterations baseline for filter {now_filter.name} with {len(annotations)} annotations.")
+
+    from .optimize_prompt import PromptOptimizer
+    optimizer = PromptOptimizer()
+    calibrated_filter = optimizer.calibrate_prompt(backend_filter, annotations, rounds=3, beam_size=2)
+
+    updated_filter = now_filter.update_filter(calibrated_filter.serialize())
+    # apply the updated filter to all comments
+    update_predictions(updated_filter, 'all')
+    updated_filter.calibrated = True
+    updated_filter.save()
+    end_time = time.time()
+    logger.info(f"Automatic iterations baseline for filter {now_filter.name} has been completed in {end_time - start_time} seconds.")
+    return {
+        'iteratedFilter': updated_filter.serialize()
+    }
+
+
 
 @shared_task
 def experiment_calibrate_prompt_task(source_filter_id, whether_initialize=False):
@@ -202,12 +239,15 @@ def experiment_calibrate_prompt_task(source_filter_id, whether_initialize=False)
         updated_filter = new_filter.update_filter(calibrated_filter.serialize())
         # apply the updated filter to all comments
         update_predictions(updated_filter, 'all')
-        return updated_filter.serialize()
+        updated_filter.calibrated = True
+        updated_filter.save()
+        return updated_filter
 
     new_filters = []
     if whether_initialize:
         new_filters.append(run_calibration('circle'))
-        new_filters.append(run_calibration('square'))
+        square_filter = run_calibration('square')
+        new_filters.append(square_filter)
     else:
         circle_filter = copy_filter(filter, f"{filter.name} [Circle]", restart=True)
         circle_filter.approach = 'circle'
@@ -221,5 +261,5 @@ def experiment_calibrate_prompt_task(source_filter_id, whether_initialize=False)
         time.sleep(20)
 
     return {
-        'createdFilters': new_filters,
+        'createdFilters': [f.serialize() for f in new_filters]
     }

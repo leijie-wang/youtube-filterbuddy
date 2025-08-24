@@ -92,7 +92,7 @@ class BackendPromptFilter:
             elif kind == 'negative':
                 self.negatives.append(self.parse_rubrics(new_rubric, examples=comments))
 
-    def stringify_filter(self, structured=False):
+    def stringify_filter(self, structured=False, without_examples=False):
         positive_points = ''
         negative_points = ''
         few_shot_examples = ''
@@ -123,7 +123,7 @@ class BackendPromptFilter:
                     negative_points += f"<rubric>{number_of_positives + index}. {rubric['rubric']}</rubric>\n"
                 negative_points = f"<negatives>However, do not catch the following categories of comments:\n{negative_points}</negatives>\n"
 
-        if self.few_shots:
+        if not without_examples and self.few_shots:
             few_shot_examples = f'Here are a few examples to illustrate what comments should be caught or not:\n'
             for example in self.few_shots:
                 few_shot_examples += f"\t\t- <data>{example['content']}</data><prediction>{'True' if example['groundtruth'] == 1 else 'False'}</prediction>\n"

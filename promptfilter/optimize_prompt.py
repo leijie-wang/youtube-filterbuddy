@@ -1,3 +1,4 @@
+from hmac import new
 from .chat_completion import ChatCompletion
 from .models import FilterPrediction, Comment
 import time
@@ -13,12 +14,12 @@ class PromptOptimizer:
         self.llm_client = ChatCompletion()
         self.buddy = LLMBuddy()
         self.opt = {
-            'minibatch_size': 20,
+            'minibatch_size': 32,
             'errors_per_gradient': 4,
             'n_gradients': 2,
             'gradients_per_error': 1,
             'steps_per_gradient': 1,
-            'mc_samples_per_step': 2,
+            'mc_samples_per_step': 1,
             'max_expansion_factor': 4,
             'reject_on_errors': False,
             'beam_size': 2,
@@ -128,14 +129,14 @@ class PromptOptimizer:
     def generate_synonyms(self, prompt_section, n=3):
         """ Generate synonyms for a prompt section."""
         rewriter_prompt = f"Generate a variation of the following instruction while keeping the semantic meaning.\n\nInput: {prompt_section}\n\nOutput:"
-        new_instructions = self.llm_client.chat_completion(
-            system_prompt=rewriter_prompt,
-            user_prompt="",
-            type="text",
-            n=n
-        )
-
-        new_instructions = [x for x in new_instructions if x]
+        new_instructions = []
+        for _ in range(n):
+            new_instruction = self.llm_client.chat_completion(
+                system_prompt=rewriter_prompt,
+                user_prompt="",
+                type="text",
+            )
+            new_instructions.append(new_instruction.strip())
         return new_instructions
     
     def expand_candidates(self, prompts, train_exs):

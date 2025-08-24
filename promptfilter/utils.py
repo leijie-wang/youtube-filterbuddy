@@ -5,6 +5,8 @@ from scipy.spatial.distance import cdist
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from datetime import timedelta
 from django.utils import timezone
+
+
 from .models import User, Channel, PromptFilter, UserLog, FilterPrediction
 
 
@@ -125,6 +127,7 @@ def retrieve_predictions(filter, whether_iterate):
             # True sorts higher than False if we do descending order on the Boolean field
             .order_by('-prediction', '-comment__posted_at')
         )
+        predictions = predictions.exclude(experiment_type='test')
         logger.info(f"predictions at the iteration mode: {len(predictions)}")
         # if there are too many predictions, we want to sample the first N predictions
         predictions = predictions[:N]
@@ -338,15 +341,25 @@ def delete_channel(username):
     user.delete()
     print(f"User {username} and all related data have been deleted.")
 
-def copy_filter(source_filter, new_name, restart=True):
-    new_filter = PromptFilter.objects.filter(
+def copy_filter(source_filter, new_name, restart=True, flatten=False):
+    from .models import PromptRubric, FilterPrediction
+    
+    new_filters = PromptFilter.objects.filter(
         name=new_name,
         channel=source_filter.channel
-    ).first()
-    if restart and new_filter is not None:
-        print(f"Deleting existing filter {new_filter.name} for restart.")
-        new_filter.delete()
-        new_filter = None
+    ).all()
+    if len(new_filters) > 0:
+        if restart:
+            print(f"Deleting existing filter {new_name} for restart.")
+            for new_filter in new_filters:
+                new_filter.rubrics.all().delete()
+                new_filter.delete()
+            new_filter = None
+        else:
+            print(f"Filter {new_name} already exists. Returning existing filter.")
+            return new_filters.first()
+
+    new_filter = new_filters.first()
     if new_filter is None:
         new_filter = PromptFilter.objects.create(
             name=new_name,
@@ -354,10 +367,29 @@ def copy_filter(source_filter, new_name, restart=True):
             channel=source_filter.channel,
         )
         new_filter.save()
+        if not flatten:
+            src_rubrics = list(source_filter.rubrics.all())
+            PromptRubric.objects.bulk_create([
+                PromptRubric(
+                    rubric=r.rubric,
+                    is_positive=r.is_positive,
+                    filter=new_filter,
+                )
+                for r in src_rubrics
+            ])
+        else:
+            logger.info(f"Flattening rubrics for filter {new_filter.name}.")
+            from promptfilter.backend_filter import BackendPromptFilter
+            source_backend_filter = BackendPromptFilter.create_backend_filter(source_filter)
+            new_filter.description = source_backend_filter.stringify_filter(without_examples=True)
+            new_filter.save()
+
         # copy predictions as well
         predictions = source_filter.matches.all()
-        new_predictions = []
+        logger.info(f"Copying {len(predictions)} predictions from {source_filter.name} to {new_filter.name}.")
+
         for prediction in predictions:
+
             new_prediction = FilterPrediction(
                 filter=new_filter,
                 comment=prediction.comment,
@@ -366,6 +398,6 @@ def copy_filter(source_filter, new_name, restart=True):
                 groundtruth=prediction.groundtruth,
                 experiment_type=prediction.experiment_type
             )
-            new_predictions.append(new_prediction)
-        FilterPrediction.objects.bulk_create(new_predictions)
+            new_prediction.save()
+        
     return new_filter
