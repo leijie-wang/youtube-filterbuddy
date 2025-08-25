@@ -1081,7 +1081,7 @@ class LLMBuddy:
             else:
                 refine_clusters = [refine_clusters]
         new_filters = self.expand_candidates(filter, refine_clusters)
-        
+        logger.info(f'We have generated {len(new_filters)} new prompt candidates to refine the filter')
         start_time = time.time()
         # TODO: determine how should we build the training dataset and how to highlight the mistakes.
 
@@ -1119,7 +1119,7 @@ class LLMBuddy:
         @return: a list of the best filters
         """
         logger.info(f"Running bandit strategy with {len(filters)} filters to select the top {topN} from {len(comments)} comments.")
-        if topN is not None and topN > len(filters):
+        if topN is not None and topN >= len(filters):
             logger.warning(f'The topN {topN} is larger than the number of filters {len(filters)}. Return all filters directly.')
             return filters
         
@@ -1284,7 +1284,7 @@ class LLMBuddy:
         if high_weights_comments_ids:
             logger.info('#' * 100)
             high_weights_comments = [comment for comment in comments if comment['id'] in high_weights_comments_ids]
-            filters = self.__overall_select_best_filters(filters, high_weights_comments, threshold=0.1)
+            filters = self.__overall_select_best_filters(filters, high_weights_comments, threshold=3)
             logger.info(f'We have reduced the number of filters to {len(filters)} based on their performance on the high weights comments.')
             for filter in filters:
                 filter.attributes['fixedHighWeightsMistakes'] = filter.attributes['fixedMistakes']
